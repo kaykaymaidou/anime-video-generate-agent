@@ -1,0 +1,16 @@
+/** @type {import('jest').Config} */
+module.exports = {
+  testEnvironment: "node",
+  transform: {
+    "^.+\\.(t|j)sx?$": [
+      "ts-jest",
+      {
+        useESM: true,
+        tsconfig: "tsconfig.json"
+      }
+    ]
+  },
+  extensionsToTreatAsEsm: [".ts"],
+  testMatch: ["**/test/**/*.test.ts"]
+};
+

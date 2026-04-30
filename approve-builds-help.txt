@@ -1,0 +1,5 @@
+Version 10.12.1 (compiled to binary; bundled Node.js v22.22.0)
+Approve dependencies for running scripts during installation
+
+Options:
+  -g, --global             Approve dependencies of global packages
