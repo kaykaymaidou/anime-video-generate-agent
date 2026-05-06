@@ -1,4 +1,3 @@
 packages:
-  - "auto-drama-client"
-  - "auto-drama-server"
-  - "auto-drama-ai"
+  - "apps/*"
+  - "services/*"

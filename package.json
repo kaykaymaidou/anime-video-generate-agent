@@ -4,9 +4,11 @@
   "packageManager": "pnpm@10.12.1",
   "type": "module",
   "scripts": {
-    "dev": "pnpm -r --parallel dev",
+    "dev": "node scripts/dev.mjs",
+    "dev:apps": "pnpm -r --parallel dev",
     "build": "pnpm -r build",
-    "test": "pnpm -r test"
+    "test": "pnpm -r test",
+    "test:py": "pnpm -C services/auto-drama-ai py:test"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
