@@ -54,6 +54,7 @@ test-results/
 .eslintcache
 
 # --- OS / Editor ---
+.cursor/
 .DS_Store
 Thumbs.db
 *.swp
