@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { v4 as uuidv4 } from "uuid";
 
+import type { IProgressBroadcaster } from "../realtime/progress-broadcaster.interface";
 import { ProgressGateway } from "../realtime/progress.gateway";
 import { VolcArkService } from "../volc/volc-ark.service";
 import { volcFailurePayload } from "../volc/volc-user-facing";
@@ -14,15 +15,18 @@ import { UsageLedgerService } from "./usage-ledger.service";
 @Injectable()
 export class AgentService {
   private readonly log = new Logger(AgentService.name);
+  private readonly progress: IProgressBroadcaster;
 
   constructor(
     private readonly volc: VolcArkService,
-    private readonly progress: ProgressGateway,
+    progressGateway: ProgressGateway,
     private readonly director: DirectorAgentService,
     private readonly animePipeline: AnimeAgentPipelineService,
     private readonly scriptIntent: ScriptIntentService,
     private readonly usageLedger: UsageLedgerService
-  ) {}
+  ) {
+    this.progress = progressGateway;
+  }
 
   async handleAgent(body: unknown): Promise<{ ok: boolean; taskId: string }> {
     const maybe = body as Record<string, unknown>;

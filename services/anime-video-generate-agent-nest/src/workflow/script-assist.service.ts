@@ -4,6 +4,7 @@ import {
   ServiceUnavailableException,
 } from "@nestjs/common";
 
+import type { IProgressBroadcaster } from "../realtime/progress-broadcaster.interface";
 import { ProgressGateway } from "../realtime/progress.gateway";
 import { VolcChatService } from "../volc/volc-chat.service";
 import { parseJsonLoose } from "../volc/text.util";
@@ -24,11 +25,15 @@ export type ScriptReviewResult = {
 
 @Injectable()
 export class ScriptAssistService {
+  private readonly progress: IProgressBroadcaster;
+
   constructor(
     private readonly chat: VolcChatService,
     private readonly pipeline: AnimeAgentPipelineService,
-    private readonly progress: ProgressGateway
-  ) {}
+    progressGateway: ProgressGateway
+  ) {
+    this.progress = progressGateway;
+  }
 
   async reviewScript(script: string): Promise<ScriptReviewResult> {
     const s = script.trim();

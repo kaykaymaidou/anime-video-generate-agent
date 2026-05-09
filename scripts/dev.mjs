@@ -1,7 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import http from "node:http";
-import { createRequire } from "node:module";
 import path from "node:path";
 import process from "node:process";
 import net from "node:net";
@@ -131,20 +130,40 @@ async function waitForHealth({ port, timeoutMs = 20000 }) {
   return false;
 }
 
+/** @returns {string[]} 例如 `@nestjs/cli` → `@nestjs`,`cli` */
+function npmPackageDirSegments(npmPackageName) {
+  if (!npmPackageName.startsWith("@")) return [npmPackageName];
+  const i = npmPackageName.indexOf("/", 1);
+  if (i === -1) throw new Error(`[dev] invalid scoped package name: ${npmPackageName}`);
+  return [npmPackageName.slice(0, i), npmPackageName.slice(i + 1)];
+}
+
 /**
- * 读取依赖包 package.json 的 bin 字段（避免 vite/tsx 的 exports 禁止 deep resolve）。
+ * 读取依赖包 package.json 的 bin 字段。
+ * 使用 workspace 包目录与仓库根的 physical node_modules 路径，兼容 pnpm；
+ * 避免 createRequire(package.json) 在子包未链接 node_modules 时 MODULE_NOT_FOUND。
  */
 function resolvePackageBin(packageRoot, npmPackageName, binKey) {
-  const req = createRequire(path.join(packageRoot, "package.json"));
-  const pkgJsonPath = req.resolve(`${npmPackageName}/package.json`);
-  const pkgDir = path.dirname(pkgJsonPath);
-  const pkg = JSON.parse(readFileSync(pkgJsonPath, "utf8"));
-  const bin = pkg.bin;
-  const rel = typeof bin === "string" ? bin : bin?.[binKey];
-  if (!rel || typeof rel !== "string") {
-    throw new Error(`[dev] missing bin "${binKey}" in ${npmPackageName} (${pkgJsonPath})`);
+  const segments = npmPackageDirSegments(npmPackageName);
+  const roots = [packageRoot, repoRoot];
+  const tried = [];
+  for (const root of roots) {
+    const pkgJsonPath = path.join(root, "node_modules", ...segments, "package.json");
+    tried.push(pkgJsonPath);
+    if (!existsSync(pkgJsonPath)) continue;
+    const pkgDir = path.dirname(pkgJsonPath);
+    const pkg = JSON.parse(readFileSync(pkgJsonPath, "utf8"));
+    const bin = pkg.bin;
+    const rel = typeof bin === "string" ? bin : bin?.[binKey];
+    if (!rel || typeof rel !== "string") {
+      throw new Error(`[dev] missing bin "${binKey}" in ${npmPackageName} (${pkgJsonPath})`);
+    }
+    return path.join(pkgDir, rel.replace(/^\.\//, ""));
   }
-  return path.join(pkgDir, rel.replace(/^\.\//, ""));
+  throw new Error(
+    `[dev] Cannot find "${npmPackageName}". Checked:\n  ${tried.join("\n  ")}\n` +
+      `Run: cd "${repoRoot}" && pnpm install`,
+  );
 }
 
 /**

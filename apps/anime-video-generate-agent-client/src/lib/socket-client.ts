@@ -1,11 +1,17 @@
 import { io, type Socket } from "socket.io-client";
 import { v4 as uuidv4 } from "uuid";
 
+import {
+  type SocketConnectionPhase,
+  transitionSocketPhase,
+} from "@/lib/socket-connection.machine";
+
 type SocketPoolState = {
   socket: Socket | null;
   refCount: number;
   clientId: string;
   connected: boolean;
+  connectionPhase: SocketConnectionPhase;
   lastHelloAt: number;
   heartbeatTimer: number | null;
   heartbeatSeq: number;
@@ -19,10 +25,20 @@ const state: SocketPoolState =
     refCount: 0,
     clientId: uuidv4(),
     connected: false,
+    connectionPhase: "idle",
     lastHelloAt: 0,
     heartbeatTimer: null,
     heartbeatSeq: 0,
   });
+
+function setPhase(next: SocketConnectionPhase) {
+  state.connectionPhase = next;
+}
+
+/** 供调试或 UI；与 socket.connected 互补（含重连中间态）。 */
+export function getSocketConnectionPhase(): SocketConnectionPhase {
+  return state.connectionPhase;
+}
 
 export function acquireSocketClient(): { socket: Socket; release: () => void; clientId: string } {
   const origin =
@@ -46,15 +62,34 @@ export function acquireSocketClient(): { socket: Socket; release: () => void; cl
       auth: { clientId: state.clientId },
     });
 
+    const rawConnect = s.connect.bind(s);
+    s.connect = (...args: Parameters<Socket["connect"]>) => {
+      setPhase(transitionSocketPhase(state.connectionPhase, { type: "connect_called" }));
+      return rawConnect(...args);
+    };
+
     s.on("connect", () => {
       state.connected = true;
+      setPhase(transitionSocketPhase(state.connectionPhase, { type: "socket_connected" }));
       if (debug) console.debug("[socket] connected", { id: s.id, origin, clientId: state.clientId });
       s.emit("client-hello", { clientId: state.clientId, ts: Date.now() });
       state.lastHelloAt = Date.now();
     });
     s.on("disconnect", () => {
       state.connected = false;
+      setPhase(transitionSocketPhase(state.connectionPhase, { type: "socket_disconnected" }));
       if (debug) console.debug("[socket] disconnected");
+    });
+    s.on("connect_error", (err: Error & { message?: string }) => {
+      setPhase(transitionSocketPhase(state.connectionPhase, { type: "connect_error", message: err?.message }));
+      if (debug) console.debug("[socket] connect_error", err?.message);
+    });
+    s.io.on("reconnect_attempt", () => {
+      setPhase(transitionSocketPhase(state.connectionPhase, { type: "reconnect_attempt" }));
+    });
+    s.io.on("reconnect", () => {
+      setPhase(transitionSocketPhase(state.connectionPhase, { type: "reconnect" }));
+      state.connected = true;
     });
 
     if (debug) {
@@ -99,6 +134,8 @@ export function acquireSocketClient(): { socket: Socket; release: () => void; cl
       } catch {}
       state.socket = null;
       state.refCount = 0;
+      state.connected = false;
+      setPhase(transitionSocketPhase(state.connectionPhase, { type: "socket_destroyed" }));
       if (state.heartbeatTimer) {
         window.clearInterval(state.heartbeatTimer);
         state.heartbeatTimer = null;
@@ -109,7 +146,10 @@ export function acquireSocketClient(): { socket: Socket; release: () => void; cl
   return { socket: state.socket, release, clientId: state.clientId };
 }
 
-// 兼容旧调用
+/**
+ * @deprecated 每次调用会增加引用计数且永不释放，易导致泄漏。请使用 `acquireSocketClient()` 并在 effect cleanup 中 `release()`。
+ */
 export function createSocketClient(): Socket {
   return acquireSocketClient().socket;
 }
+

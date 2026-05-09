@@ -7,11 +7,13 @@ import {
 } from "@nestjs/websockets";
 import type { Server, Socket } from "socket.io";
 
+import type { IProgressBroadcaster } from "./progress-broadcaster.interface";
+
 @WebSocketGateway({
   cors: { origin: true, credentials: true },
   transports: ["websocket", "polling"],
 })
-export class ProgressGateway implements OnGatewayConnection {
+export class ProgressGateway implements OnGatewayConnection, IProgressBroadcaster {
   private readonly log = new Logger(ProgressGateway.name);
 
   @WebSocketServer()

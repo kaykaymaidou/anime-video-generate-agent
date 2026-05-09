@@ -21,6 +21,8 @@ interface TaskState {
   generationPendingShotIds: string[];
   generationHadBatchError: boolean;
   activeProgressTaskId: string | null;
+  /** 每轮 begin / abort / 整批结束 +1，用于丢弃跨波次的迟到 Socket 包 */
+  progressIngressGeneration: number;
   progress: number | null;
   progressMessage: string | null;
   events: TaskEvent[];
@@ -45,6 +47,7 @@ export const useTaskStore = create<TaskState>()(
       generationPendingShotIds: [],
       generationHadBatchError: false,
       activeProgressTaskId: null,
+      progressIngressGeneration: 0,
       progress: null,
       progressMessage: null,
       events: [],
@@ -53,12 +56,13 @@ export const useTaskStore = create<TaskState>()(
       selectShot: (selectedShotId) => set({ selectedShotId }),
       setActiveVideoUrl: (activeVideoUrl) => set({ activeVideoUrl }),
       beginShotGeneration: (taskId, shotIds) =>
-        set({
+        set((s) => ({
+          progressIngressGeneration: s.progressIngressGeneration + 1,
           activeProgressTaskId: taskId,
           generationPendingShotIds: [...shotIds],
           generationHadBatchError: false,
           status: "queued",
-        }),
+        })),
       resolveShotGeneration: (shotId, outcome = "ok") =>
         set((s) => {
           const pending = s.generationPendingShotIds.filter((id) => id !== shotId);
@@ -68,15 +72,21 @@ export const useTaskStore = create<TaskState>()(
             generationPendingShotIds: pending,
             generationHadBatchError: hadErr,
             status: doneAll ? (hadErr ? "failed" : "succeeded") : "running",
-            ...(doneAll ? { activeProgressTaskId: null } : {}),
+            ...(doneAll
+              ? {
+                  activeProgressTaskId: null,
+                  progressIngressGeneration: s.progressIngressGeneration + 1,
+                }
+              : {}),
           };
         }),
       abortShotGeneration: () =>
-        set({
+        set((s) => ({
+          progressIngressGeneration: s.progressIngressGeneration + 1,
           generationPendingShotIds: [],
           generationHadBatchError: false,
           activeProgressTaskId: null,
-        }),
+        })),
       appendEvent: (raw) =>
         set((s) => {
           const ev = typeof raw?.event === "string" ? raw.event : undefined;

@@ -2,6 +2,8 @@
 
 ## 1. 定义
 
+Nest 以 **面向对象的 Provider/Module + DI** 组织代码；跨模块协作优先 **接口（如 `IProgressBroadcaster`）+ 实现类** 以减少耦合。模式细节见 [docs/CODE_PATTERNS.md](./docs/CODE_PATTERNS.md)。
+
 | 字段 | 值 |
 |------|-----|
 | 运行时 | NestJS（HTTP + Socket.io） |
