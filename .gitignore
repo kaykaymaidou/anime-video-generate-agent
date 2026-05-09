@@ -1,6 +1,10 @@
 # =========================
-# Auto-Drama monorepo
+# anime-video-generate-agent monorepo
 # =========================
+
+# --- Nest timeline exports (generated MP4) ---
+services/anime-video-generate-agent-nest/storage/exports/*
+!services/anime-video-generate-agent-nest/storage/exports/.gitkeep
 
 # --- Dependencies ---
 node_modules/

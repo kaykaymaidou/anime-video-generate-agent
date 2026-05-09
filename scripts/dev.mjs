@@ -1,12 +1,16 @@
 import { spawn } from "node:child_process";
-import { existsSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import http from "node:http";
+import { createRequire } from "node:module";
 import path from "node:path";
 import process from "node:process";
 import net from "node:net";
 
 const repoRoot = path.resolve(process.cwd());
-const aiDir = path.join(repoRoot, "services", "auto-drama-ai");
+const nestPkgRoot = path.join(repoRoot, "services", "anime-video-generate-agent-nest");
+const clientPkgRoot = path.join(repoRoot, "apps", "anime-video-generate-agent-client");
+const serverPkgRoot = path.join(repoRoot, "apps", "anime-video-generate-agent-server");
+const aiDir = path.join(repoRoot, "services", "anime-video-generate-agent-ai");
 const venvDir = path.join(aiDir, ".venv");
 const requirements = path.join(aiDir, "requirements.txt");
 const depsStamp = path.join(venvDir, ".deps-installed");
@@ -29,6 +33,9 @@ const fake =
   args.has("--fake") ||
   args.has("--mock") ||
   args.has("--no-volc");
+
+/** 默认：Nest + Vite。旧栈（Python 网关 + Next + Vite）：pnpm dev -- --legacy */
+const legacyStack = args.has("--legacy") || args.has("--full-stack");
 
 function run(cmd, args, opts = {}) {
   return new Promise((resolve, reject) => {
@@ -66,17 +73,6 @@ async function ensurePythonDeps() {
       writeFileSync(depsStamp, `ok ${new Date().toISOString()}\n`, "utf8");
     } catch {}
   }
-}
-
-function start(label, cmd, args, cwd) {
-  const p = spawn(cmd, args, { cwd, stdio: "inherit", shell: false, env: process.env });
-  p.on("exit", (code) => {
-    if (code && code !== 0) {
-      // eslint-disable-next-line no-console
-      console.error(`[dev] ${label} exited code=${code}`);
-    }
-  });
-  return p;
 }
 
 function isPortOpen(port, host) {
@@ -135,7 +131,151 @@ async function waitForHealth({ port, timeoutMs = 20000 }) {
   return false;
 }
 
-async function main() {
+/**
+ * 读取依赖包 package.json 的 bin 字段（避免 vite/tsx 的 exports 禁止 deep resolve）。
+ */
+function resolvePackageBin(packageRoot, npmPackageName, binKey) {
+  const req = createRequire(path.join(packageRoot, "package.json"));
+  const pkgJsonPath = req.resolve(`${npmPackageName}/package.json`);
+  const pkgDir = path.dirname(pkgJsonPath);
+  const pkg = JSON.parse(readFileSync(pkgJsonPath, "utf8"));
+  const bin = pkg.bin;
+  const rel = typeof bin === "string" ? bin : bin?.[binKey];
+  if (!rel || typeof rel !== "string") {
+    throw new Error(`[dev] missing bin "${binKey}" in ${npmPackageName} (${pkgJsonPath})`);
+  }
+  return path.join(pkgDir, rel.replace(/^\.\//, ""));
+}
+
+/**
+ * 用 `node <cli.js> …` 拉起子进程（shell: false），避免：
+ * - Windows 上 `cmd /c pnpm …` 多一层包装
+ * - 部分工具链在 shell:true + argv 组合下触发 Node DEP0190
+ */
+function spawnNodeCli(cliModulePath, cliArgs, { cwd, env }) {
+  return spawn(process.execPath, [cliModulePath, ...cliArgs], {
+    cwd,
+    stdio: "inherit",
+    shell: false,
+    env,
+  });
+}
+
+function nestDevProc(env) {
+  const cli = resolvePackageBin(nestPkgRoot, "@nestjs/cli", "nest");
+  return spawnNodeCli(cli, ["start", "--watch"], { cwd: nestPkgRoot, env });
+}
+
+function viteDevProc(env) {
+  const cli = resolvePackageBin(clientPkgRoot, "vite", "vite");
+  return spawnNodeCli(cli, [], { cwd: clientPkgRoot, env });
+}
+
+function nextServerDevProc(env) {
+  const cli = resolvePackageBin(serverPkgRoot, "tsx", "tsx");
+  return spawnNodeCli(cli, ["server.ts"], { cwd: serverPkgRoot, env });
+}
+
+function attachShutdown(children) {
+  const shutdown = () => {
+    for (let i = children.length - 1; i >= 0; i -= 1) {
+      try {
+        children[i].kill("SIGTERM");
+      } catch {}
+    }
+  };
+
+  process.on("SIGINT", () => {
+    shutdown();
+    process.exit(0);
+  });
+  process.on("SIGTERM", () => {
+    shutdown();
+    process.exit(0);
+  });
+}
+
+/**
+ * 默认开发栈：anime-video-generate-agent-nest（HTTP + Socket.io + 火山 HTTP）+ Vite。
+ * 前端 /api 与 Socket 均指向 Nest，不启动 Python、不启动 Next。
+ */
+async function runNestClientStack() {
+  const isInUse = async (p) =>
+    (await isPortOpen(p, "127.0.0.1")) ||
+    (await isPortOpen(p, "localhost")) ||
+    (await isPortOpen(p, "::1"));
+
+  let nestPort = Number(process.env.NEST_PORT || 4010);
+  if (!Number.isFinite(nestPort)) nestPort = 4010;
+  const nestPortExplicit = process.env.NEST_PORT != null && String(process.env.NEST_PORT).trim() !== "";
+
+  if (await isInUse(nestPort)) {
+    if (nestPortExplicit) {
+      throw new Error(`NEST_PORT ${nestPort} is already in use. Stop anime-video-generate-agent-nest or set NEST_PORT=<free>.`);
+    }
+    let picked = nestPort;
+    for (let p = nestPort + 1; p <= nestPort + 40; p += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      if (!(await isInUse(p))) {
+        picked = p;
+        break;
+      }
+    }
+    if (await isInUse(picked)) {
+      throw new Error(`No free Nest port in range ${nestPort}..${nestPort + 40}. Set NEST_PORT=<free>.`);
+    }
+    if (picked !== nestPort) {
+      // eslint-disable-next-line no-console
+      console.warn(`[dev] NEST_PORT ${nestPort} in use, auto-picked ${picked}`);
+    }
+    nestPort = picked;
+  }
+
+  const nestEnv = { ...process.env, NEST_PORT: String(nestPort) };
+  if (debug) {
+    nestEnv.AUTO_DRAMA_ENV_DEBUG = nestEnv.AUTO_DRAMA_ENV_DEBUG ?? "1";
+  }
+  const clientEnv = {
+    ...process.env,
+    VITE_GATEWAY_ORIGIN: `http://127.0.0.1:${nestPort}`,
+  };
+
+  if (debug) {
+    clientEnv.VITE_SOCKET_DEBUG = clientEnv.VITE_SOCKET_DEBUG ?? "1";
+    // eslint-disable-next-line no-console
+    console.log("[dev] debug: VITE_SOCKET_DEBUG for client");
+  }
+
+  // eslint-disable-next-line no-console
+  console.log(
+    "[dev] stack=Nest+Vite（Nest 直连火山 REST；密钥可读 services/anime-video-generate-agent-ai/.env）。旧栈: pnpm dev -- --legacy"
+  );
+
+  const children = [];
+
+  const nest = nestDevProc(nestEnv);
+  nest.on("exit", (code) => {
+    if (code && code !== 0) console.error(`[dev] anime-video-generate-agent-nest exited code=${code}`);
+  });
+  children.push(nest);
+
+  const nestOk = await waitForHttpOk(`http://127.0.0.1:${nestPort}/health`, 30000);
+  if (!nestOk) {
+    // eslint-disable-next-line no-console
+    console.warn(`[dev] Nest /health did not respond in time; client may error until Nest is ready`);
+  }
+
+  const client = viteDevProc(clientEnv);
+  client.on("exit", (code) => {
+    if (code && code !== 0) console.error(`[dev] client exited code=${code}`);
+  });
+  children.push(client);
+
+  attachShutdown(children);
+}
+
+/** 旧栈：Python 网关 + Next + Vite（可选 VIDEO_TASK_BACKEND=nest 再起 Nest 代理） */
+async function runLegacyStack() {
   if (!skipPy) {
     await ensurePythonDeps();
   }
@@ -145,14 +285,15 @@ async function main() {
   const isExplicit = process.env.PORT != null && String(process.env.PORT).trim() !== "";
 
   const isInUse = async (p) =>
-    (await isPortOpen(p, "127.0.0.1")) || (await isPortOpen(p, "localhost")) || (await isPortOpen(p, "::1"));
+    (await isPortOpen(p, "127.0.0.1")) ||
+    (await isPortOpen(p, "localhost")) ||
+    (await isPortOpen(p, "::1"));
 
   let port = basePort;
   if (await isInUse(port)) {
     if (isExplicit) {
       throw new Error(`PORT ${port} is already in use. Please stop the old server or set PORT=<free port>.`);
     }
-    // 自动探测可用端口
     for (let p = basePort + 1; p <= basePort + 50; p += 1) {
       // eslint-disable-next-line no-await-in-loop
       if (!(await isInUse(p))) {
@@ -167,14 +308,15 @@ async function main() {
     console.warn(`[dev] port ${basePort} in use, auto-picked ${port}`);
   }
 
-  /** Python FastAPI 网关（POST/GET 任务）；FAKE/skip-py 时不启动，Next 仍走 stdin worker */
   let gatewayPort = Number(process.env.PY_GATEWAY_PORT || 8799);
   if (!Number.isFinite(gatewayPort)) gatewayPort = 8799;
   const gatewayPortExplicit = process.env.PY_GATEWAY_PORT != null && String(process.env.PY_GATEWAY_PORT).trim() !== "";
   if (!skipPy && !skipGateway && !fake) {
     if (await isInUse(gatewayPort)) {
       if (gatewayPortExplicit) {
-        throw new Error(`PY_GATEWAY_PORT ${gatewayPort} is already in use. Stop the old gateway or unset PY_GATEWAY_PORT.`);
+        throw new Error(
+          `PY_GATEWAY_PORT ${gatewayPort} is already in use. Stop the old gateway or unset PY_GATEWAY_PORT.`
+        );
       }
       let picked = gatewayPort;
       for (let p = gatewayPort + 1; p <= gatewayPort + 40; p += 1) {
@@ -198,14 +340,14 @@ async function main() {
   const serverEnv = { ...process.env, PORT: String(port) };
   const clientEnv = { ...process.env, VITE_GATEWAY_ORIGIN: `http://localhost:${port}` };
 
+  const videoBackendRaw = String(process.env.VIDEO_TASK_BACKEND || "").trim().toLowerCase();
+  const wantNestBridge = videoBackendRaw === "nest" || videoBackendRaw === "nestjs";
+
   if (debug) {
-    // 一键打开全链路终端日志（Next/Socket/Python）
     serverEnv.PIPELINE_DEBUG = serverEnv.PIPELINE_DEBUG ?? "1";
-    // 只看 Next 链路：默认关闭 PythonBridge 终端输出（需要时再手动设置 PY_BRIDGE_DEBUG=event/raw）
     serverEnv.PY_BRIDGE_DEBUG = serverEnv.PY_BRIDGE_DEBUG ?? "off";
     serverEnv.SOCKET_DEBUG = serverEnv.SOCKET_DEBUG ?? "1";
     serverEnv.PROGRESS_DEBUG = serverEnv.PROGRESS_DEBUG ?? "1";
-    // 前端可选：打开浏览器控制台 socket debug
     clientEnv.VITE_SOCKET_DEBUG = clientEnv.VITE_SOCKET_DEBUG ?? "1";
     // eslint-disable-next-line no-console
     console.log("[dev] debug logs enabled (PIPELINE_DEBUG/PY_BRIDGE_DEBUG/SOCKET_DEBUG)");
@@ -217,19 +359,6 @@ async function main() {
     console.log("[dev] FAKE mode enabled (AUTO_DRAMA_FAKE=1): bypass volcengine, emit simulated progress/result");
   }
 
-  const spawnPnpm = (args, env) => {
-    if (process.platform === "win32") {
-      // 在 Windows 上 pnpm 是 .cmd 脚本，需通过 cmd.exe 执行，且保持 shell:false
-      return spawn("cmd.exe", ["/d", "/s", "/c", "pnpm", ...args], {
-        cwd: repoRoot,
-        stdio: "inherit",
-        shell: false,
-        env
-      });
-    }
-    return spawn("pnpm", args, { cwd: repoRoot, stdio: "inherit", shell: false, env });
-  };
-
   const children = [];
 
   if (!skipPy && !skipGateway && !fake && existsSync(aiDir)) {
@@ -240,7 +369,7 @@ async function main() {
     const gatewayEnv = {
       ...process.env,
       PY_GATEWAY_HOST: process.env.PY_GATEWAY_HOST || "127.0.0.1",
-      PY_GATEWAY_PORT: String(gatewayPort)
+      PY_GATEWAY_PORT: String(gatewayPort),
     };
     const gw = spawn(
       pyRun,
@@ -265,7 +394,63 @@ async function main() {
     console.log("[dev] --skip-gateway: Next will use stdin Python worker (no HTTP gateway)");
   }
 
-  const server = spawnPnpm(["-C", "apps/auto-drama-server", "dev"], serverEnv);
+  if (wantNestBridge && !fake) {
+    if (!serverEnv.PY_GATEWAY_URL && !process.env.NEST_PY_GATEWAY_UPSTREAM?.trim()) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[dev] VIDEO_TASK_BACKEND=nest but no Python gateway URL (start gateway or set NEST_PY_GATEWAY_UPSTREAM)"
+      );
+    }
+    let nestPort = Number(process.env.NEST_PORT || 4010);
+    if (!Number.isFinite(nestPort)) nestPort = 4010;
+    const nestPortExplicit = process.env.NEST_PORT != null && String(process.env.NEST_PORT).trim() !== "";
+    if (await isInUse(nestPort)) {
+      if (nestPortExplicit) {
+        throw new Error(`NEST_PORT ${nestPort} is already in use. Stop anime-video-generate-agent-nest or set NEST_PORT=<free>.`);
+      }
+      let picked = nestPort;
+      for (let p = nestPort + 1; p <= nestPort + 40; p += 1) {
+        // eslint-disable-next-line no-await-in-loop
+        if (!(await isInUse(p))) {
+          picked = p;
+          break;
+        }
+      }
+      if (await isInUse(picked)) {
+        throw new Error(`No free Nest port in range ${nestPort}..${nestPort + 40}. Set NEST_PORT=<free>.`);
+      }
+      if (picked !== nestPort) {
+        // eslint-disable-next-line no-console
+        console.warn(`[dev] NEST_PORT ${nestPort} in use, auto-picked ${picked}`);
+      }
+      nestPort = picked;
+    }
+
+    const nestEnv = {
+      ...process.env,
+      NEST_PORT: String(nestPort),
+      NEST_PY_GATEWAY_UPSTREAM: serverEnv.PY_GATEWAY_URL || process.env.NEST_PY_GATEWAY_UPSTREAM || "",
+    };
+    if (debug) {
+      nestEnv.AUTO_DRAMA_ENV_DEBUG = nestEnv.AUTO_DRAMA_ENV_DEBUG ?? "1";
+    }
+    const nest = nestDevProc(nestEnv);
+    nest.on("exit", (code) => {
+      if (code && code !== 0) console.error(`[dev] anime-video-generate-agent-nest exited code=${code}`);
+    });
+    children.push(nest);
+    serverEnv.VIDEO_TASK_BACKEND = serverEnv.VIDEO_TASK_BACKEND || "nest";
+    serverEnv.NEST_API_URL = `http://127.0.0.1:${nestPort}`;
+    // eslint-disable-next-line no-console
+    console.log(`[dev] VIDEO_TASK_BACKEND=nest → anime-video-generate-agent-nest http://127.0.0.1:${nestPort}`);
+    const nestOk = await waitForHttpOk(`http://127.0.0.1:${nestPort}/health`, 25000);
+    if (!nestOk) {
+      // eslint-disable-next-line no-console
+      console.warn(`[dev] anime-video-generate-agent-nest /health did not respond in time; task submit may fail`);
+    }
+  }
+
+  const server = nextServerDevProc(serverEnv);
   server.on("exit", (code) => {
     if (code && code !== 0) console.error(`[dev] server exited code=${code}`);
   });
@@ -275,29 +460,21 @@ async function main() {
     // eslint-disable-next-line no-console
     console.warn(`[dev] server did not open port ${port} within timeout; starting client anyway`);
   }
-  const client = spawnPnpm(["-C", "apps/auto-drama-client", "dev"], clientEnv);
+  const client = viteDevProc(clientEnv);
   client.on("exit", (code) => {
     if (code && code !== 0) console.error(`[dev] client exited code=${code}`);
   });
 
   children.push(server, client);
 
-  const shutdown = () => {
-    for (let i = children.length - 1; i >= 0; i -= 1) {
-      try {
-        children[i].kill("SIGTERM");
-      } catch {}
-    }
-  };
+  attachShutdown(children);
+}
 
-  process.on("SIGINT", () => {
-    shutdown();
-    process.exit(0);
-  });
-  process.on("SIGTERM", () => {
-    shutdown();
-    process.exit(0);
-  });
+async function main() {
+  if (legacyStack) {
+    return runLegacyStack();
+  }
+  return runNestClientStack();
 }
 
 main().catch((e) => {
@@ -305,4 +482,3 @@ main().catch((e) => {
   console.error(e);
   process.exit(1);
 });
-
