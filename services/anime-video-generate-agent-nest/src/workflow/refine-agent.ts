@@ -3,6 +3,7 @@ import { v4 as uuidv4 } from "uuid";
 
 import {
   buildAnimeParagraphPrompt,
+  buildCrossShotConsistencyBridge,
   composeSeedancePrompt,
   defaultKnowledgeSnippetFromEnv,
   mergeKnowledgeLayers,
@@ -151,7 +152,10 @@ export function refineAgentRequest(input: unknown):
   const orderedShots = [...shots].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   const stylePreset = req.animeStylePreset as AnimeStylePreset | undefined;
   const useMangaGrammar = req.animePromptBoost === "manga_storyboard";
-  const inheritCross = Boolean(req.inheritCrossShotStyle);
+  const intentStageCount = (req.intentStages ?? []).map((x) => x.trim()).filter(Boolean).length;
+  /** 进化链等长序列：默认开启跨镜继承（客户端仍可通过 inheritCrossShotStyle:false 显式关闭） */
+  const inheritCross =
+    req.inheritCrossShotStyle === false ? false : Boolean(req.inheritCrossShotStyle) || intentStageCount >= 2;
 
   const refined: RefinedShot[] = [];
   let prevBasePrompt = "";
@@ -169,8 +173,7 @@ export function refineAgentRequest(input: unknown):
 
     let mergedConsistency = consistencyNotes;
     if (inheritCross && prevBasePrompt.trim()) {
-      const tail = prevBasePrompt.trim().slice(-380);
-      const bridge = `【跨镜连贯】同一角色脸型、发色、服饰主色块须与上一镜一致。上一镜画面要点：${tail}`;
+      const bridge = buildCrossShotConsistencyBridge(prevBasePrompt);
       mergedConsistency = [consistencyNotes, bridge].filter(Boolean).join("\n") || bridge;
     }
 

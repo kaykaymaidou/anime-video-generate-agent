@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, Logger } from "@nestjs/common";
 import { v4 as uuidv4 } from "uuid";
 
+import { parseStoryboardMaxShotsInput, resolveStoryboardShotBounds } from "../volc/storyboard-schema";
 import type { IProgressBroadcaster } from "../realtime/progress-broadcaster.interface";
 import { ProgressGateway } from "../realtime/progress.gateway";
 import { VolcArkService } from "../volc/volc-ark.service";
@@ -10,6 +11,8 @@ import { mergeKnowledgeLayers, defaultKnowledgeSnippetFromEnv } from "./prompt-p
 import { ScriptIntentService, type ScriptIntentAnalysis } from "./script-intent.service";
 import { DirectorAgentService } from "./workflow-engines.service";
 import { refineAgentRequest, type RefinedShot } from "./refine-agent";
+import { ShotContinuityPassService } from "./shot-continuity-pass.service";
+import { isPrAShotContinuityEnabled, propagateAdjacentFirstFrames } from "./shot-continuity.util";
 import { UsageLedgerService } from "./usage-ledger.service";
 
 @Injectable()
@@ -23,7 +26,8 @@ export class AgentService {
     private readonly director: DirectorAgentService,
     private readonly animePipeline: AnimeAgentPipelineService,
     private readonly scriptIntent: ScriptIntentService,
-    private readonly usageLedger: UsageLedgerService
+    private readonly usageLedger: UsageLedgerService,
+    private readonly shotContinuity: ShotContinuityPassService
   ) {
     this.progress = progressGateway;
   }
@@ -43,12 +47,14 @@ export class AgentService {
     this.director.emitWorkflowMilestones(taskId, emit);
 
     const script = typeof maybe.script === "string" ? maybe.script.trim() : "";
+    const storyboardMaxShots = parseStoryboardMaxShotsInput(maybe.storyboardMaxShots);
+    const shotBoundsForIntent = resolveStoryboardShotBounds(storyboardMaxShots);
     let bodyForRefine: unknown = body;
 
     let intentSnapshot: ScriptIntentAnalysis | null = null;
     if (script && this.animePipeline.isEnabled()) {
       try {
-        intentSnapshot = await this.scriptIntent.analyze(script);
+        intentSnapshot = await this.scriptIntent.analyze(script, shotBoundsForIntent);
         if (intentSnapshot) {
           emit({
             event: "agent-intent",
@@ -85,6 +91,7 @@ export class AgentService {
           ...(kbMerged ? { ragContext: kbMerged } : {}),
           intentAnalysis: intentSnapshot,
           ...(ctxKey ? { contextCacheKey: ctxKey } : {}),
+          ...(storyboardMaxShots != null ? { storyboardMaxShots } : {}),
         });
         const existing = Array.isArray(maybe.shots) ? maybe.shots : [];
         const merged = llmShots.map((s, idx) => {
@@ -103,7 +110,18 @@ export class AgentService {
             ...(s.fps != null ? { fps: s.fps } : {}),
           };
         });
-        bodyForRefine = { ...maybe, script, shots: merged };
+        bodyForRefine = {
+          ...maybe,
+          script,
+          shots: merged,
+          ...(storyboardMaxShots != null ? { storyboardMaxShots } : {}),
+          ...(intentSnapshot && intentSnapshot.evolution_stages.length >= 2
+            ? {
+                intentStages: intentSnapshot.evolution_stages,
+                intentSecondsPerShot: intentSnapshot.seconds_per_shot,
+              }
+            : {}),
+        };
         emit({ event: "agent-langchain-done", shotCount: merged.length });
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -141,11 +159,30 @@ export class AgentService {
       });
     }
 
-    emit({ event: "agent-refined", shots: refined.data.shots });
+    let shotsOut = refined.data.shots;
+    if (isPrAShotContinuityEnabled()) {
+      const afterFrames = propagateAdjacentFirstFrames(shotsOut);
+      emit({
+        event: "agent-pr-a-frames",
+        message: "PR-A：已尝试上一镜 lastFrame → 下一镜 firstFrame 对齐",
+        frames: afterFrames.map((s) => ({
+          order: s.order,
+          hasFirstFrame: Boolean(s.firstFrame?.trim()),
+          hasLastFrame: Boolean(s.lastFrame?.trim()),
+        })),
+      });
+      shotsOut = await this.shotContinuity.applyTextBridging(afterFrames);
+      emit({
+        event: "agent-pr-a-text",
+        message: "PR-A：已对无首帧锚点的镜头尝试全局文本衔接（若对话模型不可用则跳过）",
+      });
+    }
+
+    emit({ event: "agent-refined", shots: shotsOut });
 
     emit({
       event: "pipeline-init",
-      shots: refined.data.shots.map((s) => ({
+      shots: shotsOut.map((s) => ({
         id: s.id,
         order: s.order,
         description: s.description,
@@ -154,7 +191,7 @@ export class AgentService {
       })),
     });
 
-    for (const shot of refined.data.shots) {
+    for (const shot of shotsOut) {
       void this.runShot(taskId, shot, emit);
     }
 

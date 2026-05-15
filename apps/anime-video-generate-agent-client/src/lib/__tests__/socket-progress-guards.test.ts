@@ -12,7 +12,7 @@ describe("shouldAcceptAgentProgressEvent", () => {
       { activeProgressTaskId: null, progressIngressGeneration: 3 },
     );
     expect(r.accept).toBe(false);
-    if (!r.accept) expect(r.reason).toBe("idle_drop_task_scoped");
+    if (r.accept === false) expect(r.reason).toBe("idle_drop_task_scoped");
   });
 
   it("allows task-scoped events when active matches", () => {
@@ -29,7 +29,7 @@ describe("shouldAcceptAgentProgressEvent", () => {
       { activeProgressTaskId: "t-new", progressIngressGeneration: 2 },
     );
     expect(r.accept).toBe(false);
-    if (!r.accept) expect(r.reason).toBe("task_mismatch");
+    if (r.accept === false) expect(r.reason).toBe("task_mismatch");
   });
 
   it("allows broadcast (no taskId) during active batch", () => {

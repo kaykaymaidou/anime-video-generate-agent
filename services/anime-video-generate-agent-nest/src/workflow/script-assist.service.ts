@@ -10,6 +10,7 @@ import { VolcChatService } from "../volc/volc-chat.service";
 import { parseJsonLoose } from "../volc/text.util";
 import { AnimeAgentPipelineService } from "./anime-agent.pipeline.service";
 import {
+  buildCrossShotConsistencyBridge,
   composeSeedancePrompt,
   defaultKnowledgeSnippetFromEnv,
   mergeKnowledgeLayers,
@@ -88,6 +89,8 @@ export class ScriptAssistService {
       animeStylePreset?: AnimeStylePreset;
       animePromptBoost?: "manga_storyboard" | "none";
       inheritCrossShotStyle?: boolean;
+      /** 单次拆镜最大镜头数（服务端 resolve + ABS 封顶） */
+      storyboardMaxShots?: number;
     } = {}
   ): Promise<{
     shots: Array<{
@@ -114,7 +117,6 @@ export class ScriptAssistService {
     const consistencyNotes = (opts.consistencyNotes ?? "").trim() || undefined;
     const stylePreset = opts.animeStylePreset;
     const useMangaGrammar = opts.animePromptBoost === "manga_storyboard";
-    const inheritCross = Boolean(opts.inheritCrossShotStyle);
 
     const emitStage = (stage: string, progress: number, message: string) => {
       if (!ptid) return;
@@ -128,10 +130,11 @@ export class ScriptAssistService {
     };
 
     try {
-      const { shots } = await this.pipeline.run({
+      const { shots, intentAnalysis } = await this.pipeline.run({
         script: s,
         ...(kbMerged ? { ragContext: kbMerged } : {}),
         ...(ck ? { contextCacheKey: ck } : {}),
+        ...(opts.storyboardMaxShots != null ? { storyboardMaxShots: opts.storyboardMaxShots } : {}),
         ...(ptid
           ? {
               onStoryboardStage: ({ stage, progress, message }) =>
@@ -139,6 +142,10 @@ export class ScriptAssistService {
             }
           : {}),
       });
+      const evolutionArcChain =
+        intentAnalysis?.intent === "evolution_arc" && (intentAnalysis.evolution_stages?.length ?? 0) >= 2;
+      const inheritCross =
+        opts.inheritCrossShotStyle === false ? false : Boolean(opts.inheritCrossShotStyle) || evolutionArcChain;
       emitStage("compose", 96, "对齐生成侧提示词策略…");
       const ordered = [...shots].sort((a, b) => a.order - b.order);
       let prevBase = "";
@@ -146,8 +153,7 @@ export class ScriptAssistService {
         const base = (sh.prompt ?? "").trim();
         let mergedConsistency = consistencyNotes;
         if (inheritCross && prevBase.trim()) {
-          const tail = prevBase.trim().slice(-380);
-          const bridge = `【跨镜连贯】同一角色脸型、发色、服饰主色块须与上一镜一致。上一镜画面要点：${tail}`;
+          const bridge = buildCrossShotConsistencyBridge(prevBase);
           mergedConsistency = [consistencyNotes, bridge].filter(Boolean).join("\n") || bridge;
         }
         const prompt = composeSeedancePrompt(base, {

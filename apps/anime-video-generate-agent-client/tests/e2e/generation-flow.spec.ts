@@ -7,6 +7,6 @@ test("generation flow skeleton (mocked)", async ({ page }) => {
   });
 
   await page.goto("/");
-  await expect(page).toHaveTitle(/Vite/);
+  await expect(page).toHaveTitle(/Anime Video Generate Agent/i);
 });
 

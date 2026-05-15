@@ -35,6 +35,7 @@ export type StoryboardPreviewVars = {
   animeStylePreset?: AnimeStylePresetId;
   animePromptBoost?: "manga_storyboard" | "none";
   inheritCrossShotStyle?: boolean;
+  storyboardMaxShots?: number;
 };
 
 export function useStoryboardPreviewMutation(

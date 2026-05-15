@@ -12,12 +12,53 @@ export function envInt(name: string, fallback: number, bounds?: { min: number; m
   return v;
 }
 
-export function getStoryboardShotBounds() {
+export type StoryboardShotBounds = {
+  minShots: number;
+  maxShots: number;
+  maxScriptChars: number;
+};
+
+/**
+ * 环境默认的镜头上下限（不含单次请求覆盖）。
+ */
+export function getStoryboardShotBounds(): StoryboardShotBounds {
+  return resolveStoryboardShotBounds(undefined);
+}
+
+/**
+ * 合并「用户单次请求的最大镜头数」与环境上限：
+ * - 未传 requestedMaxShots 时，maxShots 取 ARK_STORYBOARD_MAX_SHOTS（默认 12）
+ * - 传入时 clamp 到 [minShots, ARK_STORYBOARD_ABS_MAX_SHOTS]（默认可到 30）
+ *
+ * 运维可用 ARK_STORYBOARD_ABS_MAX_SHOTS 限制滥用（例如设为 16）。
+ */
+export function resolveStoryboardShotBounds(requestedMaxShots?: number | null): StoryboardShotBounds {
   const minShots = envInt("ARK_STORYBOARD_MIN_SHOTS", 3, { min: 1, max: 30 });
-  let maxShots = envInt("ARK_STORYBOARD_MAX_SHOTS", 12, { min: 1, max: 30 });
-  if (maxShots < minShots) maxShots = minShots;
+  let envDefaultMax = envInt("ARK_STORYBOARD_MAX_SHOTS", 12, { min: 1, max: 30 });
+  const absMax = envInt("ARK_STORYBOARD_ABS_MAX_SHOTS", 30, { min: 1, max: 30 });
+  if (envDefaultMax < minShots) envDefaultMax = minShots;
+
+  let maxShots = envDefaultMax;
+  if (requestedMaxShots != null && Number.isFinite(requestedMaxShots)) {
+    const r = Math.round(Number(requestedMaxShots));
+    maxShots = Math.min(absMax, Math.max(minShots, r));
+  }
+
   const maxScriptChars = envInt("ARK_STORYBOARD_MAX_SCRIPT_CHARS", 12_000, { min: 500, max: 200_000 });
   return { minShots, maxShots, maxScriptChars };
+}
+
+/** HTTP / JSON 请求体中的「拆镜上限」解析 */
+export function parseStoryboardMaxShotsInput(v: unknown): number | undefined {
+  if (v == null) return undefined;
+  const n =
+    typeof v === "number"
+      ? v
+      : typeof v === "string"
+        ? Number.parseInt(v.trim(), 10)
+        : Number.NaN;
+  if (!Number.isFinite(n)) return undefined;
+  return Math.round(n);
 }
 
 export function clampScriptForModel(script: string, maxChars: number): string {

@@ -1,8 +1,11 @@
 import { Injectable, Logger } from "@nestjs/common";
 
 import { VolcChatService } from "../volc/volc-chat.service";
+import type { StoryboardShotBounds } from "../volc/storyboard-schema";
 import { getStoryboardShotBounds } from "../volc/storyboard-schema";
 import { parseJsonLoose } from "../volc/text.util";
+
+import { truthyEnv } from "./env-flag.util";
 
 export type ScriptIntentKind = "evolution_arc" | "narrative_script" | "single_scene" | "unclear";
 
@@ -17,11 +20,6 @@ export type ScriptIntentAnalysis = {
   /** 给导演与分镜 Agent 的简短说明 */
   director_notes: string;
 };
-
-function truthyEnv(name: string): boolean {
-  const v = String(process.env[name] ?? "").trim().toLowerCase();
-  return v === "1" || v === "true" || v === "yes" || v === "on";
-}
 
 function asStrArr(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
@@ -48,7 +46,11 @@ export function formatIntentForRag(a: ScriptIntentAnalysis | null | undefined): 
       : `【意图识别·${a.intent}】`;
   const evolutionBeatHint =
     a.intent === "evolution_arc" && a.evolution_stages.length >= 2
-      ? "拆幕节奏：每一形态建议先有「亮相站稳」类节拍，相邻形态之间必须插入至少一条「进化过渡」节拍（光效包裹、剪影蜕变、能量粒子缠绕等纯画面口令）；若有招牌招式可再加一条动作节拍，使镜头数多于纯形态数、成片衔接更顺。"
+      ? [
+          "拆幕节奏（硬要求）：有序形态链中「每一形态」至少一条亮相/建档节拍；「每两个相邻形态之间」至少一条进化过渡镜（光茧包裹、剪影拉长、数码粒子重组、形体渐变轮廓同屏），禁止单镜跳过中间形态。",
+          "即使用户口语只写「亚古兽进化成战斗暴龙兽」，只要识别为进化弧，仍须按 evolution_stages 全链拆幕，不得从成长期直接跳到究极体而不经过列表中的幼年期等阶段。",
+          "镜头总数建议 ≥（形态数×2−1）：形态亮相与过渡镜交织；还不够衔接可再插入行走/跟拍/反应等微动作镜，避免「上一镜还在 A 地点下一镜无过渡已到 B」。",
+        ].join("")
       : "";
 
   const tail = [
@@ -78,12 +80,12 @@ export class ScriptIntentService {
    * 调用方舟对话模型（VOLC_CHAT_MODEL_* 降级链）理解用户口令/剧本，
    * 输出结构化意图；进化类须给出有序形态列表（可含「金属暴龙兽」等资料常用名）。
    */
-  async analyze(script: string): Promise<ScriptIntentAnalysis | null> {
+  async analyze(script: string, boundsOverride?: StoryboardShotBounds): Promise<ScriptIntentAnalysis | null> {
     if (!this.isEnabled()) return null;
     const s = script.trim();
     if (!s) return null;
 
-    const bounds = getStoryboardShotBounds();
+    const bounds = boundsOverride ?? getStoryboardShotBounds();
     this.chat.assertConfigured();
 
     const sys =

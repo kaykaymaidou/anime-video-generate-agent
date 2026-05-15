@@ -3,6 +3,7 @@ import { Module } from "@nestjs/common";
 import { RealtimeModule } from "../realtime/realtime.module";
 import { VolcModule } from "../volc/volc.module";
 import { ContextCacheSessionStore } from "./context-cache-session.store";
+import { AgentPipelineContextService } from "./agent-pipeline-context.service";
 import { AnimeAgentPipelineService } from "./anime-agent.pipeline.service";
 import { ScriptIntentService } from "./script-intent.service";
 import { AgentController } from "./agent.controller";
@@ -20,17 +21,20 @@ import {
   StoryboardEngineService,
   TimelineGeneratorService,
 } from "./workflow-engines.service";
+import { ShotContinuityPassService } from "./shot-continuity-pass.service";
 
 @Module({
   imports: [VolcModule, RealtimeModule],
   controllers: [AgentController, TimelineController, UsageController],
   providers: [
     ContextCacheSessionStore,
+    ShotContinuityPassService,
     AgentService,
     UsageLedgerService,
     TimelineConcatService,
     ScriptAssistService,
     ScriptIntentService,
+    AgentPipelineContextService,
     AnimeAgentPipelineService,
     PromptEngineService,
     StoryboardEngineService,

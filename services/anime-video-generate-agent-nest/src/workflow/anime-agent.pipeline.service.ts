@@ -7,121 +7,36 @@ import { VolcChatService } from "../volc/volc-chat.service";
 import {
   buildStoryboardJsonSchema,
   clampScriptForModel,
-  getStoryboardShotBounds,
+  envInt,
+  resolveStoryboardShotBounds,
 } from "../volc/storyboard-schema";
 import { parseJsonLoose } from "../volc/text.util";
 import { VolcHttpError } from "../volc/volc-http.error";
 import { httpStatusFromVolc, volcFailurePayload } from "../volc/volc-user-facing";
-import { ContextCacheSessionStore } from "./context-cache-session.store";
+import { AgentPipelineContextService } from "./agent-pipeline-context.service";
 import { evolutionKnowledgeSnippetForScript } from "./evolution-stages";
-import { formatIntentForRag, type ScriptIntentAnalysis, ScriptIntentService } from "./script-intent.service";
+import { evolutionArcDirectorConstraint, evolutionArcStoryboardConstraint } from "./evolution-arc-prompt-blocks";
+import {
+  formatIntentForRag,
+  type ScriptIntentAnalysis,
+  ScriptIntentService,
+} from "./script-intent.service";
+import { runStoryboardLangGraph } from "./storyboard-langgraph.runner";
+import { auditStoryboardConsistency } from "./storyboard-consistency-audit";
+import { normalizeStoryboardShotsContent } from "./storyboard-shot-normalizer";
+import type {
+  DirectorBrief,
+  PipelineShot,
+  PipelineState,
+  StoryboardPipelineStagePayload,
+} from "./storyboard-pipeline.types";
+import { truthyEnv } from "./env-flag.util";
 
-export type StoryboardPipelineStagePayload = {
-  stage: string;
-  progress: number;
-  message: string;
-};
-
-export type PipelineShot = {
-  order: number;
-  description: string;
-  prompt: string;
-  duration?: number;
-  resolution?: "480p" | "720p" | "1080p";
-  ratio?: "16:9" | "9:16" | "1:1";
-  fps?: number;
-};
-
-type DirectorBrief = {
-  styleBible: string;
-  narrativeBeats: string[];
-};
-
-type PipelineState = {
-  script: string;
-  ragContext?: string;
-  director?: DirectorBrief;
-  storyboard?: { shots: PipelineShot[] };
-};
-
-/** 模型常见偏离：顶层无 shots、嵌套在 data、或使用别名字段 */
-const STORYBOARD_ARRAY_KEYS = ["shots", "storyboard", "shot_list", "scenes", "items", "镜头列表"];
-
-function extractShotsArrayFromObject(obj: Record<string, unknown>): unknown[] | null {
-  for (const k of STORYBOARD_ARRAY_KEYS) {
-    const v = obj[k];
-    if (Array.isArray(v) && v.length > 0) return v;
-  }
-  for (const nestKey of ["data", "result", "output", "payload"]) {
-    const nested = obj[nestKey];
-    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
-      const n = nested as Record<string, unknown>;
-      for (const k of STORYBOARD_ARRAY_KEYS) {
-        const v = n[k];
-        if (Array.isArray(v) && v.length > 0) return v;
-      }
-    }
-  }
-  return null;
-}
-
-function coercePipelineShot(row: unknown, idx: number): PipelineShot | null {
-  if (!row || typeof row !== "object") return null;
-  const x = row as Record<string, unknown>;
-  const prompt = String(x.prompt ?? x.video_prompt ?? x.seedance_prompt ?? "").trim();
-  const description = String(x.description ?? x.label ?? x.title ?? x.summary ?? "").trim();
-  const orderRaw = x.order ?? x.index ?? x.idx;
-  const order = Number(orderRaw);
-  if (!prompt && !description) return null;
-  const shot: PipelineShot = {
-    order: Number.isFinite(order) && order > 0 ? Math.floor(order) : idx + 1,
-    description: description || prompt.slice(0, 160),
-    prompt: prompt || description,
-  };
-  const dur = Number(x.duration);
-  if (Number.isFinite(dur) && dur >= 2 && dur <= 12) shot.duration = dur;
-  const res = String(x.resolution ?? "");
-  if (res === "480p" || res === "720p" || res === "1080p") shot.resolution = res;
-  const ratio = String(x.ratio ?? "");
-  if (ratio === "16:9" || ratio === "9:16" || ratio === "1:1") shot.ratio = ratio;
-  const fps = Number(x.fps);
-  if (Number.isFinite(fps) && fps > 0) shot.fps = Math.round(fps);
-  return shot;
-}
-
-/** 从模型 JSON 中尽力抽出镜头行并规范化序号 */
-function normalizeStoryboardShotsContent(parsed: unknown): PipelineShot[] {
-  if (parsed == null) return [];
-  if (Array.isArray(parsed)) {
-    const rows = parsed.map((row, i) => coercePipelineShot(row, i)).filter((s): s is PipelineShot => s != null);
-    return renumberShotsInOrder(rows);
-  }
-  if (typeof parsed !== "object") return [];
-  const obj = parsed as Record<string, unknown>;
-  const arr = extractShotsArrayFromObject(obj);
-  if (!arr) return [];
-  const rows = arr.map((row, i) => coercePipelineShot(row, i)).filter((s): s is PipelineShot => s != null);
-  return renumberShotsInOrder(rows);
-}
-
-function renumberShotsInOrder(shots: PipelineShot[]): PipelineShot[] {
-  const sorted = [...shots].sort((a, b) => a.order - b.order || 0);
-  return sorted.map((s, i) => ({ ...s, order: i + 1 }));
-}
-
-function truthyEnv(name: string): boolean {
-  const v = String(process.env[name] ?? "").trim().toLowerCase();
-  return v === "1" || v === "true" || v === "yes" || v === "on";
-}
-
-/** 写入上下文缓存的共用前缀（common_prefix），后续轮次不再重复传剧本与 RAG */
-const CONTEXT_PREFIX_BOOT_SYS =
-  "以下为同一动漫短片项目的固定上下文（剧本与知识库）。后续你是导演、分镜或质检 Agent 时，不要要求用户重复粘贴全文；必要时引用「上下文缓存中的剧本与知识库」即可。";
+export type { PipelineShot, StoryboardPipelineStagePayload } from "./storyboard-pipeline.types";
 
 /**
  * LangChain Runnable 编排：导演（风格/节拍）→ 结构化分镜 → 质检润色。
  * RAG：可把静态设定塞进 ragContext（或由上层从向量库取数后传入）。
- * MCP：后续可作为 Tool 接入 Runnable；当前仅占位扩展点。
  */
 @Injectable()
 export class AnimeAgentPipelineService {
@@ -130,118 +45,17 @@ export class AnimeAgentPipelineService {
   constructor(
     private readonly chat: VolcChatService,
     private readonly arkAdv: VolcArkAdvancedService,
-    private readonly ctxStore: ContextCacheSessionStore,
+    private readonly pipelineCtx: AgentPipelineContextService,
     private readonly config: ConfigService,
     private readonly scriptIntent: ScriptIntentService
   ) {}
 
-  /**
-   * 同一 HTTP 请求内三步复用方舟上下文缓存（common_prefix），减少重复剧本/RAG token。
-   * 开启：VOLC_AGENT_CONTEXT_CACHE=1；关闭：VOLC_AGENT_CONTEXT_CACHE_DISABLE=1
-   */
   contextCacheEnabled(): boolean {
-    if (truthyEnv("VOLC_AGENT_CONTEXT_CACHE_DISABLE")) return false;
-    const raw = String(
-      this.config.get<string>("VOLC_AGENT_CONTEXT_CACHE") ?? process.env.VOLC_AGENT_CONTEXT_CACHE ?? ""
-    )
-      .trim()
-      .toLowerCase();
-    return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+    return this.pipelineCtx.isContextCacheEnabled();
   }
 
-  private contextTtlSeconds(): number {
-    const n = Number(this.config.get<string>("VOLC_CHAT_CONTEXT_TTL") ?? process.env.VOLC_CHAT_CONTEXT_TTL ?? 3600);
-    if (!Number.isFinite(n)) return 3600;
-    return Math.min(604_800, Math.max(3600, Math.round(n)));
-  }
-
-  /**
-   * 跨请求复用 context_id（须客户端传稳定的 contextCacheKey，且剧本+RAG 指纹未变）。
-   * 默认开启；VOLC_AGENT_CONTEXT_CACHE_REUSE_DISABLE=1 关闭。
-   */
   contextCacheReuseEnabled(): boolean {
-    if (!this.contextCacheEnabled()) return false;
-    if (truthyEnv("VOLC_AGENT_CONTEXT_CACHE_REUSE_DISABLE")) return false;
-    const raw = String(
-      this.config.get<string>("VOLC_AGENT_CONTEXT_CACHE_REUSE") ?? process.env.VOLC_AGENT_CONTEXT_CACHE_REUSE ?? "1"
-    )
-      .trim()
-      .toLowerCase();
-    return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
-  }
-
-  private shouldInvalidateContextReuse(e: unknown): boolean {
-    if (!(e instanceof VolcHttpError)) return false;
-    if (e.status === 403) return true;
-    const blob = `${e.message}\n${e.bodySnippet}`.toLowerCase();
-    return (
-      blob.includes("context") &&
-      (blob.includes("invalid") || blob.includes("expired") || blob.includes("state") || blob.includes("not found"))
-    );
-  }
-
-  private persistContextSession(sessionKey: string | undefined, script: string, rag: string, contextId: string | null) {
-    if (!this.contextCacheEnabled() || !sessionKey?.trim() || !contextId) return;
-    const fp = this.ctxStore.fingerprint(script, rag);
-    this.ctxStore.set(sessionKey.trim(), {
-      contextId,
-      fingerprint: fp,
-      expiresAt: Date.now() + this.contextTtlSeconds() * 1000,
-    });
-  }
-
-  private async establishArkContext(opts: {
-    script: string;
-    rag: string;
-    primaryModel: string;
-    sessionKey?: string;
-    forceNew?: boolean;
-  }): Promise<{ contextId: string | null; reusedFromStore: boolean }> {
-    if (!this.contextCacheEnabled()) {
-      return { contextId: null, reusedFromStore: false };
-    }
-    const fp = this.ctxStore.fingerprint(opts.script, opts.rag);
-    const key = opts.sessionKey?.trim();
-    if (!opts.forceNew && this.contextCacheReuseEnabled() && key) {
-      const hit = this.ctxStore.get(key);
-      if (hit && hit.fingerprint === fp) {
-        this.log.debug(`pipeline context cache session hit (${key.slice(0, 10)}…)`);
-        return { contextId: hit.contextId, reusedFromStore: true };
-      }
-    }
-
-    try {
-      const prefixUser = [
-        opts.rag ? `【知识库/设定片段】\n${opts.rag}` : "",
-        "\n【用户剧本/创意】\n",
-        opts.script,
-      ]
-        .filter(Boolean)
-        .join("\n");
-      const created = await this.arkAdv.createContextCache({
-        model: opts.primaryModel,
-        mode: "common_prefix",
-        ttl: this.contextTtlSeconds(),
-        messages: [
-          { role: "system", content: CONTEXT_PREFIX_BOOT_SYS },
-          { role: "user", content: prefixUser },
-        ],
-      });
-      const id = created.id;
-      const cid = typeof id === "string" && id.trim() ? id.trim() : null;
-      if (cid) {
-        this.log.debug(`pipeline context cache created ${cid.slice(0, 16)}… ttl=${this.contextTtlSeconds()}s`);
-      }
-      if (cid && key) {
-        this.persistContextSession(key, opts.script, opts.rag, cid);
-      }
-      return { contextId: cid, reusedFromStore: false };
-    } catch (e) {
-      this.log.warn(
-        `VOLC_AGENT_CONTEXT_CACHE: create failed, fallback to plain chat — ${e instanceof Error ? e.message : String(e)}`
-      );
-      return { contextId: null, reusedFromStore: false };
-    }
+    return this.pipelineCtx.isReuseEnabled();
   }
 
   isEnabled(): boolean {
@@ -258,15 +72,17 @@ export class AnimeAgentPipelineService {
     intentAnalysis?: ScriptIntentAnalysis | null;
     /** 客户端稳定 ID（如同一项目 UUID）；配合 VOLC_AGENT_CONTEXT_CACHE 跨请求复用方舟上下文 */
     contextCacheKey?: string;
+    /** 单次请求覆盖最大镜头数（受 ARK_STORYBOARD_ABS_MAX_SHOTS 封顶） */
+    storyboardMaxShots?: number;
     /** 拆镜预览等：每完成一阶段回调（意图 → 导演 → 分镜 → 质检） */
     onStoryboardStage?: (p: StoryboardPipelineStagePayload) => void;
   }): Promise<{ shots: PipelineShot[]; intentAnalysis: ScriptIntentAnalysis | null }> {
-    const bounds = getStoryboardShotBounds();
+    const bounds = resolveStoryboardShotBounds(input.storyboardMaxShots);
     const script = clampScriptForModel(input.script, bounds.maxScriptChars);
 
     let intent: ScriptIntentAnalysis | null | undefined = input.intentAnalysis;
     if (intent === undefined) {
-      intent = await this.scriptIntent.analyze(script).catch(() => null);
+      intent = await this.scriptIntent.analyze(script, bounds).catch(() => null);
     }
 
     const stageCb = input.onStoryboardStage;
@@ -299,7 +115,7 @@ export class AnimeAgentPipelineService {
     let contextId: string | null = null;
     let reusedFromStore = false;
     const ctxKey = input.contextCacheKey;
-    const established = await this.establishArkContext({
+    const established = await this.pipelineCtx.establishArkContext({
       script,
       rag,
       primaryModel,
@@ -344,14 +160,17 @@ export class AnimeAgentPipelineService {
       ]
         .filter(Boolean)
         .join("\n");
-      const userCached =
+      const evoDir = evolutionArcDirectorConstraint(intent, bounds.maxShots);
+      const userFullFinal = evoDir ? `${userFull}\n\n${evoDir}` : userFull;
+      const userCachedBase =
         "请根据上下文缓存中的【知识库/设定片段】与【用户剧本/创意】担任导演。" +
         "\n请输出 JSON：{ \"styleBible\": \"...\", \"narrativeBeats\": [\"...\"] }";
+      const userCachedFinal = evoDir ? `${userCachedBase}\n\n${evoDir}` : userCachedBase;
 
       const { content } = await complete({
         messages: [
           { role: "system", content: sys },
-          { role: "user", content: contextId ? userCached : userFull },
+          { role: "user", content: contextId ? userCachedFinal : userFullFinal },
         ],
         temperature: 0.35,
         ...(contextId ? {} : { response_format: { type: "json_object" } }),
@@ -381,6 +200,7 @@ export class AnimeAgentPipelineService {
         "你是「分镜」Agent。严格按 JSON Schema 输出一条 JSON。" +
         "每条 prompt 必须可直接用于 Seedance 动漫视频生成：明确景别/运动/主体外形色块/场景/动作情绪/光影色调；禁止写实真人摄影表述。" +
         "优先漫画翻页与番组分镜逻辑：可对角线张力格、破格、特写与大远景对切、压黑留白；避免电视剧口语正反打调度。" +
+        "相邻镜头必须时空连续：除第 1 镜外，每条 prompt 须用简短句承接上一镜结尾（姿态/机位/朝向）；禁止无铺垫的大跨度跳场；若换场景必须插入过渡镜（跟拍行走、推拉门、路程压缩蒙太奇等）。" +
         "description 仅一句剧情标签（如「成熟期：暴龙兽」），禁止写入用户原始口令或需求全文；prompt 只写画面，不复述用户提问句子。";
       const sysShape =
         " 输出必须是单个 JSON 对象，顶层含非空数组 shots；每项含 order（整数）、description、prompt；禁止 markdown、禁止省略 shots。";
@@ -396,12 +216,14 @@ export class AnimeAgentPipelineService {
         state.director!.narrativeBeats.map((b, i) => `${i + 1}. ${b}`).join("\n"),
       ].join("");
 
+      const evoSb = evolutionArcStoryboardConstraint(intent, bounds.maxShots);
       const userFullBase =
         userBodyCore +
         ["\n【剧本】\n", script, `\n拆成 ${bounds.minShots}～${bounds.maxShots} 个镜头；每条含 order、description、prompt。`].join("") +
         (intent?.evolution_stages?.length
           ? `\n【时长建议】每条镜头 duration（秒）优先填 ${intent.seconds_per_shot}（2-12）。`
-          : "");
+          : "") +
+        (evoSb ? `\n${evoSb}` : "");
 
       const userCachedBase =
         userBodyCore +
@@ -411,7 +233,8 @@ export class AnimeAgentPipelineService {
         ].join("") +
         (intent?.evolution_stages?.length
           ? `\n【时长建议】每条镜头 duration（秒）优先填 ${intent.seconds_per_shot}（2-12）。`
-          : "");
+          : "") +
+        (evoSb ? `\n${evoSb}` : "");
 
       const runStoryboardAttempt = async (remedySuffix: string): Promise<PipelineShot[]> => {
         const userFull = remedySuffix ? `${userFullBase}\n${remedySuffix}` : userFullBase;
@@ -448,7 +271,19 @@ export class AnimeAgentPipelineService {
         return normalizeStoryboardShotsContent(parsedObj);
       };
 
-      let shots = await runStoryboardAttempt("");
+      const graphRemedy = (state.remedySuffix ?? "").trim();
+      let shots = await runStoryboardAttempt(graphRemedy);
+      if (
+        intent?.intent === "evolution_arc" &&
+        intent.evolution_stages.length >= 2 &&
+        shots.length < intent.evolution_stages.length
+      ) {
+        const target = Math.min(bounds.maxShots, intent.evolution_stages.length * 2 - 1);
+        const evoRemedy =
+          `【系统补救·进化弧】上一轮镜头条数少于有序形态数。必须至少 ${intent.evolution_stages.length} 条镜头分别对应形态：${intent.evolution_stages.join("→")}，` +
+          `且建议在每两个形态间各增加 1 条过渡镜；总条数尽量达到 ${target}（上限 ${bounds.maxShots}）。`;
+        shots = await runStoryboardAttempt(evoRemedy);
+      }
       if (shots.length < bounds.minShots) {
         this.log.warn(`分镜首轮有效镜头 ${shots.length} 条（期望≥${bounds.minShots}），触发一次自动重试`);
         const remedy =
@@ -469,13 +304,19 @@ export class AnimeAgentPipelineService {
       if (shots.length > bounds.maxShots) {
         shots = shots.slice(0, bounds.maxShots);
       }
-      return { ...state, storyboard: { shots } };
+      return { ...state, storyboard: { shots }, remedySuffix: undefined };
     });
 
     const qaStep = RunnableLambda.from(async (state: PipelineState): Promise<{ shots: PipelineShot[] }> => {
       const schema = buildStoryboardJsonSchema(bounds.minShots, bounds.maxShots);
+      const qaEvo =
+        intent?.intent === "evolution_arc" && intent.evolution_stages.length >= 2
+          ? " 若为进化弧：核查 shots 是否覆盖意图中的每一形态（名称可写在 description）；缺失早期形态则拆分或增补镜头；强化相邻 prompt 的承接句。"
+          : "";
       const sys =
         "你是「质检」Agent：检查镜头信息是否足够、prompt 是否与风格宪法一致；若出现真人实拍/写实摄影/纪录片/新闻风/明星指向，必须改为动漫导演表述。" +
+        "核查相邻镜头是否存在无过渡跳场：若有则改写或增补过渡描述。" +
+        qaEvo +
         "若 description 或 prompt 中含有用户原始提问句式（如「生成一个…视频」），必须改成简短标签与纯画面描述。必要时改写 prompt。只输出符合 Schema 的一条 JSON。";
       const user = [
         "【风格宪法】\n",
@@ -521,6 +362,15 @@ export class AnimeAgentPipelineService {
       };
     });
 
+    const runConsistencyAudit = async (ws: PipelineState, shotList: PipelineShot[]) =>
+      auditStoryboardConsistency({
+        workspace: ws,
+        shots: shotList,
+        intent,
+        complete,
+        contextId,
+      });
+
     const invokeChain = async () => {
       let state: PipelineState = { script, ragContext: rag };
       state = await directorStep.invoke(state);
@@ -532,15 +382,39 @@ export class AnimeAgentPipelineService {
       return qaOut;
     };
 
+    const maxGraphRepairs = envInt("VOLC_AGENT_GRAPH_MAX_REPAIRS", 1, { min: 0, max: 4 });
+    const useLangGraph = truthyEnv("VOLC_AGENT_LANGGRAPH");
+
+    const invokeChainGraph = async () => {
+      const shots = await runStoryboardLangGraph(
+        {
+          maxRepairs: maxGraphRepairs,
+          onStage: stageCb
+            ? (stage: string, progress: number, message: string) =>
+                stageCb({ stage, progress, message })
+            : undefined,
+          director: (ws) => directorStep.invoke(ws as PipelineState),
+          storyboard: (ws) => storyboardStep.invoke(ws as PipelineState),
+          qa: (ws) => qaStep.invoke(ws as PipelineState),
+          audit: (ws, sh) => runConsistencyAudit(ws as PipelineState, sh as PipelineShot[]),
+        },
+        { script, ragContext: rag },
+      );
+      stageCb?.({ stage: "qa", progress: 96, message: "LangGraph 流水线收敛" });
+      return { shots };
+    };
+
+    const invokePreferred = async () => (useLangGraph ? invokeChainGraph() : invokeChain());
+
     try {
-      const raw = await invokeChain();
-      this.persistContextSession(ctxKey, script, rag, contextId);
+      const raw = await invokePreferred();
+      this.pipelineCtx.persistSession(ctxKey, script, rag, contextId);
       return { shots: raw.shots, intentAnalysis: intent ?? null };
     } catch (e) {
       const keyTrim = ctxKey?.trim();
-      if (keyTrim && reusedFromStore && this.shouldInvalidateContextReuse(e)) {
-        this.ctxStore.invalidate(keyTrim);
-        const second = await this.establishArkContext({
+      if (keyTrim && reusedFromStore && this.pipelineCtx.shouldInvalidateReuse(e)) {
+        this.pipelineCtx.invalidateSession(keyTrim);
+        const second = await this.pipelineCtx.establishArkContext({
           script,
           rag,
           primaryModel,
@@ -550,8 +424,8 @@ export class AnimeAgentPipelineService {
         contextId = second.contextId;
         reusedFromStore = second.reusedFromStore;
         try {
-          const raw = await invokeChain();
-          this.persistContextSession(ctxKey, script, rag, contextId);
+          const raw = await invokePreferred();
+          this.pipelineCtx.persistSession(ctxKey, script, rag, contextId);
           return { shots: raw.shots, intentAnalysis: intent ?? null };
         } catch (e2) {
           if (e2 instanceof VolcHttpError) {

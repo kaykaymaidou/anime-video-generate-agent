@@ -9,6 +9,7 @@
     "dev:apps": "pnpm -r --parallel dev",
     "build": "pnpm -r build",
     "test": "pnpm -r test",
+    "test:jest": "node scripts/run-jest-all.mjs",
     "test:py": "pnpm -C services/anime-video-generate-agent-ai py:test"
   },
   "pnpm": {

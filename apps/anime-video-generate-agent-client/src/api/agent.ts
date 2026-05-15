@@ -39,6 +39,8 @@ export type StoryboardPreviewBody = {
   animeStylePreset?: AnimeStylePresetId;
   animePromptBoost?: "manga_storyboard" | "none";
   inheritCrossShotStyle?: boolean;
+  /** 服务端拆镜 JSON 的 maxItems，影响导演/分镜 Schema 上限 */
+  storyboardMaxShots?: number;
 };
 
 export function postStoryboardPreview(body: StoryboardPreviewBody) {
@@ -82,6 +84,8 @@ export type SubmitAgentPayload = {
   animePromptBoost?: "manga_storyboard" | "none";
   /** 跨镜头继承上一镜基底要点，减轻跳变 */
   inheritCrossShotStyle?: boolean;
+  /** 与拆镜预览一致：覆盖单次流水线最大镜头数（越高越容易细拆衔接镜，消耗越大） */
+  storyboardMaxShots?: number;
   shots: SubmitAgentShotPayload[];
 };
 

@@ -79,6 +79,17 @@ export type SeedancePromptParts = {
 /**
  * 合成顺序：基底 → 知识库 → 人设一致 → 画风预设 → 漫画分镜语法 → 负面规避 → 平台动漫锁定
  */
+/** 跨镜继承：写入「人设一致」层，压缩上一镜基底 prompt 尾部作为承接锚点 */
+export function buildCrossShotConsistencyBridge(prevBasePrompt: string): string {
+  const tail = prevBasePrompt.trim().slice(-520);
+  if (!tail) return "";
+  return (
+    "【跨镜连贯】同一主体轮廓比例、主色块（皮肤/甲胄/发光眼）、发型剪影须与上一镜一致，禁止无故更换物种或人设跳变。" +
+    "画面须承接上一镜结尾的景别与动作惯性（像连环分镜而非跳剪短视频）。上一镜基底要点：" +
+    tail
+  );
+}
+
 export function composeSeedancePrompt(basePrompt: string, parts: SeedancePromptParts): string {
   let p = (basePrompt || "").trim();
   if (p.length > MAX_BASE) p = p.slice(0, MAX_BASE);

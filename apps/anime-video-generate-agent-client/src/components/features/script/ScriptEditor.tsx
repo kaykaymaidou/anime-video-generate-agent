@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { acquireSocketClient } from "@/lib/socket-client";
+import { STORYBOARD_MAX_SHOT_CHOICES } from "@/lib/storyboard-limits";
 import { cn } from "@/lib/utils";
 import { ragStoryboardFromScript } from "@/lib/rag-storyboard";
 import { webllmStoryboardFromScript } from "@/lib/webllm-storyboard";
@@ -86,6 +87,8 @@ export function ScriptEditor({
   previewAnimeStylePreset,
   previewAnimeMangaBoost,
   previewAnimeCrossShot,
+  storyboardMaxShots = 12,
+  onStoryboardMaxShotsChange,
 }: {
   onGenerateAll?: () => void;
   onGenerateShot?: (shotId: string) => void;
@@ -98,6 +101,9 @@ export function ScriptEditor({
   previewAnimeStylePreset?: string;
   previewAnimeMangaBoost?: boolean;
   previewAnimeCrossShot?: boolean;
+  /** 服务端拆镜 Schema 最大镜头条数（与生成提交共用） */
+  storyboardMaxShots?: number;
+  onStoryboardMaxShotsChange?: (n: number) => void;
 }) {
   const [localScript, setLocalScript] = useState<string>("");
   const text = script ?? localScript;
@@ -188,6 +194,7 @@ export function ScriptEditor({
         ...(presetOk ? { animeStylePreset: presetOk } : {}),
         animePromptBoost: previewAnimeMangaBoost ? "manga_storyboard" : "none",
         inheritCrossShotStyle: previewAnimeCrossShot === true,
+        storyboardMaxShots,
         progressTaskId,
       });
     } finally {
@@ -267,7 +274,42 @@ export function ScriptEditor({
             </div>
           )}
         </div>
-        <div className="flex shrink-0 flex-col gap-2 sm:items-end">
+          <div className="flex shrink-0 flex-col gap-2 sm:items-end">
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="flex items-center gap-1.5 text-[11px] text-slate-400">
+              <span className="whitespace-nowrap text-slate-500">拆镜上限</span>
+              <select
+                value={storyboardMaxShots}
+                disabled={panelBusy || splittingShots}
+                onChange={(e) => onStoryboardMaxShotsChange?.(Number(e.target.value))}
+                className="h-8 rounded-md border border-white/15 bg-slate-900 px-2 text-[11px] text-slate-200 disabled:opacity-50"
+                title="单次结构化拆镜最多生成几条镜头"
+              >
+                {STORYBOARD_MAX_SHOT_CHOICES.map((n) => (
+                  <option key={n} value={n}>
+                    {n} 条
+                  </option>
+                ))}
+              </select>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="rounded-full p-0.5 text-slate-600 hover:bg-white/5 hover:text-slate-400"
+                    aria-label="拆镜上限说明"
+                  >
+                    <HelpCircle className="h-3.5 w-3.5" />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" align="end" className="max-w-[min(92vw,340px)] text-[11px] leading-relaxed">
+                  数值越高，模型越能把剧情拆成更细的衔接镜（例如穿鞋→站起→开门→出门→沿路走→到校门口），类似提高{" "}
+                  <span className="font-mono">ARK_STORYBOARD_MAX_SHOTS</span>。镜头越多，方舟对话拆镜与 Seedance
+                  成片次数通常越多，对话 token 与视频计费会明显上升，总耗时也更长。运维可用环境变量{" "}
+                  <span className="font-mono">ARK_STORYBOARD_ABS_MAX_SHOTS</span> 封顶单次上限。
+                </TooltipContent>
+              </Tooltip>
+            </label>
+          </div>
           <div className="flex flex-wrap gap-2">
             <Button
               variant="secondary"
@@ -290,9 +332,11 @@ export function ScriptEditor({
               {previewMutation.isPending ? "拆分中…" : "拆分镜头"}
             </Button>
           </div>
-          <div className="flex max-w-[280px] items-start gap-1 text-[10px] leading-snug text-slate-500">
+          <div className="flex max-w-[320px] items-start gap-1 text-[10px] leading-snug text-slate-500">
             <span className="min-w-0 flex-1">
-              服务端拆镜走 <span className="font-mono">VOLC_AGENT_PIPELINE</span>，和侧栏知识片段、环境 KB 会合并。
+              拆镜上限 {storyboardMaxShots} 条：越多越容易拆出过渡镜，但 Ark 与 Seedance 消耗更大。服务端{" "}
+              <span className="font-mono">VOLC_AGENT_PIPELINE</span>
+              ，与侧栏知识、环境 KB 合并。
             </span>
             <Tooltip>
               <TooltipTrigger asChild>

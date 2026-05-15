@@ -1,5 +1,6 @@
 import { Body, Controller, Post } from "@nestjs/common";
 
+import { parseStoryboardMaxShotsInput } from "../volc/storyboard-schema";
 import type { AnimeStylePreset } from "./prompt-policy";
 import { AgentService } from "./agent.service";
 import { ScriptAssistService } from "./script-assist.service";
@@ -44,6 +45,7 @@ export class AgentController {
       animeStylePreset?: string;
       animePromptBoost?: "manga_storyboard" | "none";
       inheritCrossShotStyle?: boolean;
+      storyboardMaxShots?: unknown;
     }
   ) {
     const ck =
@@ -58,6 +60,7 @@ export class AgentController {
       body?.animePromptBoost === "manga_storyboard" || body?.animePromptBoost === "none"
         ? body.animePromptBoost
         : undefined;
+    const maxShots = parseStoryboardMaxShotsInput(body?.storyboardMaxShots);
     return this.assist.previewStoryboard(String(body?.script ?? ""), {
       knowledgeContext: body?.knowledgeContext,
       contextCacheKey: ck,
@@ -67,6 +70,7 @@ export class AgentController {
       animeStylePreset: parseAnimeStylePreset(body?.animeStylePreset),
       animePromptBoost: boost,
       inheritCrossShotStyle: body?.inheritCrossShotStyle === true,
+      ...(maxShots != null ? { storyboardMaxShots: maxShots } : {}),
     });
   }
 }

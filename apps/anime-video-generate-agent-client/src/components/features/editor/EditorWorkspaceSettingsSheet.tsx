@@ -1,4 +1,3 @@
-import type { RefObject } from "react";
 import { HelpCircle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -13,76 +12,24 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import {
-  mergeCharacterSnippetIntoNotes,
-  type AnimeCharacterCard,
-} from "@/store/animeCharacterStore";
-import type { AnimeProjectSnapshot } from "@/store/storyboardStore";
-import type { Shot } from "@/types";
+import { useEditorWorkspace } from "@/contexts/editor-workspace-context";
+import { mergeCharacterSnippetIntoNotes } from "@/store/animeCharacterStore";
 
-type Props = {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  tab: string;
-  onTabChange: (tab: string) => void;
-  shots: Shot[];
-  script: string;
-  referenceLibraryUrls: string[];
-  consistencyNotes: string;
-  setConsistencyNotes: (v: string | ((prev: string) => string)) => void;
-  knowledgeContext: string;
-  setKnowledgeContext: (v: string) => void;
-  animeStylePreset: string;
-  setAnimeStylePreset: (v: string) => void;
-  animeMangaBoost: boolean;
-  setAnimeMangaBoost: (v: boolean) => void;
-  animeCrossShot: boolean;
-  setAnimeCrossShot: (v: boolean) => void;
-  concatTransition: string;
-  setConcatTransition: (v: string) => void;
-  concatClips: { order: number; url: string }[];
-  concatTimelinePending: boolean;
-  concatTimelineError: unknown;
-  submitting: boolean;
-  masterVideoUrl: string | null;
-  onConcatSubmit: () => void;
-  animeProjectSnapshots: AnimeProjectSnapshot[];
-  snapshotLabelDraft: string;
-  setSnapshotLabelDraft: (v: string) => void;
-  saveAnimeProjectSnapshot: (
-    label: string,
-    payload: {
-      shots: Shot[];
-      referenceLibraryUrls: string[];
-      script: string;
-      consistencyNotes: string;
-      knowledgeContext: string;
-    },
-  ) => void;
-  restoreAnimeProjectSnapshot: (id: string) => AnimeProjectSnapshot | null;
-  deleteAnimeProjectSnapshot: (id: string) => void;
-  selectShot: (id: string | null) => void;
-  setScript: (s: string) => void;
-  animeCharacters: AnimeCharacterCard[];
-  charNameDraft: string;
-  setCharNameDraft: (v: string) => void;
-  charSheetDraft: string;
-  setCharSheetDraft: (v: string) => void;
-  charNotesDraft: string;
-  setCharNotesDraft: (v: string) => void;
-  addAnimeCharacter: (c: Omit<AnimeCharacterCard, "id">) => void;
-  removeAnimeCharacter: (id: string) => void;
-  buildAnimeCharacterSnippet: () => string;
-  refUrlDraft: string;
-  setRefUrlDraft: (v: string) => void;
-  addReferenceLibraryUrl: (u: string) => void;
-  removeReferenceLibraryUrl: (u: string) => void;
-  refFileInputRef: RefObject<HTMLInputElement | null>;
-};
+/** 创作抽屉：通过 EditorWorkspaceProvider 取数据，页面不再传递数十个 props。 */
+export function EditorWorkspaceSettingsSheet() {
+  const w = useEditorWorkspace();
+  const sh = w.sheet;
+  const sb = w.storyboard;
+  const fm = w.form;
+  const cc = w.concat;
+  const gen = w.generation;
+  const snap = w.snapshotUi;
+  const ch = w.charactersUi;
+  const rf = w.refsUi;
+  const tk = w.task;
 
-export function EditorWorkspaceSettingsSheet(p: Props) {
   return (
-    <Sheet open={p.open} onOpenChange={p.onOpenChange}>
+    <Sheet open={sh.open} onOpenChange={sh.setOpen}>
       <SheetContent side="right" className="flex flex-col gap-0 p-0">
         <SheetHeader className="shrink-0 space-y-1">
           <SheetTitle>创作资源与生成设置</SheetTitle>
@@ -91,7 +38,7 @@ export function EditorWorkspaceSettingsSheet(p: Props) {
           </SheetDescription>
         </SheetHeader>
 
-        <Tabs value={p.tab} onValueChange={p.onTabChange} className="flex min-h-0 flex-1 flex-col px-3 pb-3 pt-0">
+        <Tabs value={sh.tab} onValueChange={sh.setTab} className="flex min-h-0 flex-1 flex-col px-3 pb-3 pt-0">
           <TabsList className="h-auto shrink-0 flex-wrap justify-start gap-1 bg-slate-900/90 p-1">
             <TabsTrigger value="snapshot" className="text-xs">
               项目快照
@@ -118,8 +65,8 @@ export function EditorWorkspaceSettingsSheet(p: Props) {
               <div className="text-[11px] font-medium text-slate-400">动漫项目快照（剧本 + 分镜 + 侧栏文案）</div>
               <div className="mt-2 flex flex-wrap gap-2">
                 <Input
-                  value={p.snapshotLabelDraft}
-                  onChange={(e) => p.setSnapshotLabelDraft(e.target.value)}
+                  value={snap.labelDraft}
+                  onChange={(e) => snap.setLabelDraft(e.target.value)}
                   placeholder="快照名称…"
                   className="min-w-[140px] flex-1 border-white/10 bg-slate-900/80 text-xs"
                 />
@@ -129,22 +76,22 @@ export function EditorWorkspaceSettingsSheet(p: Props) {
                   size="sm"
                   className="text-xs"
                   onClick={() => {
-                    p.saveAnimeProjectSnapshot(p.snapshotLabelDraft, {
-                      shots: p.shots,
-                      referenceLibraryUrls: p.referenceLibraryUrls,
-                      script: p.script,
-                      consistencyNotes: p.consistencyNotes,
-                      knowledgeContext: p.knowledgeContext,
+                    sb.saveAnimeProjectSnapshot(snap.labelDraft, {
+                      shots: sb.shots,
+                      referenceLibraryUrls: sb.referenceLibraryUrls,
+                      script: fm.script,
+                      consistencyNotes: fm.consistencyNotes,
+                      knowledgeContext: fm.knowledgeContext,
                     });
-                    p.setSnapshotLabelDraft("");
+                    snap.setLabelDraft("");
                   }}
                 >
                   保存快照
                 </Button>
               </div>
-              {p.animeProjectSnapshots.length > 0 && (
+              {sb.animeProjectSnapshots.length > 0 && (
                 <ul className="mt-3 max-h-52 space-y-1 overflow-y-auto text-[11px] text-slate-400">
-                  {p.animeProjectSnapshots.map((s) => (
+                  {sb.animeProjectSnapshots.map((s) => (
                     <li
                       key={s.id}
                       className="flex flex-wrap items-center justify-between gap-2 rounded border border-white/5 bg-black/20 px-2 py-1.5"
@@ -160,18 +107,16 @@ export function EditorWorkspaceSettingsSheet(p: Props) {
                           type="button"
                           className="text-sky-400 hover:text-sky-300"
                           onClick={() => {
-                            if (
-                              !window.confirm(`恢复快照「${s.label}」？未另存的分镜与剧本会被覆盖。`)
-                            ) {
+                            if (!window.confirm(`恢复快照「${s.label}」？未另存的分镜与剧本会被覆盖。`)) {
                               return;
                             }
-                            const snap = p.restoreAnimeProjectSnapshot(s.id);
-                            if (!snap) return;
-                            p.setScript(snap.script);
-                            p.setConsistencyNotes(snap.consistencyNotes);
-                            p.setKnowledgeContext(snap.knowledgeContext);
-                            const first = snap.shots[0];
-                            if (first?.id) p.selectShot(first.id);
+                            const restored = sb.restoreAnimeProjectSnapshot(s.id);
+                            if (!restored) return;
+                            fm.setScript(restored.script);
+                            fm.setConsistencyNotes(restored.consistencyNotes);
+                            fm.setKnowledgeContext(restored.knowledgeContext);
+                            const first = restored.shots[0];
+                            if (first?.id) tk.selectShot(first.id);
                           }}
                         >
                           恢复
@@ -181,7 +126,7 @@ export function EditorWorkspaceSettingsSheet(p: Props) {
                           className="text-rose-400 hover:text-rose-300"
                           onClick={() => {
                             if (!window.confirm(`删除快照「${s.label}」？`)) return;
-                            p.deleteAnimeProjectSnapshot(s.id);
+                            sb.deleteAnimeProjectSnapshot(s.id);
                           }}
                         >
                           删除
@@ -214,8 +159,8 @@ export function EditorWorkspaceSettingsSheet(p: Props) {
                 </Tooltip>
               </div>
               <Textarea
-                value={p.knowledgeContext}
-                onChange={(e) => p.setKnowledgeContext(e.target.value)}
+                value={fm.knowledgeContext}
+                onChange={(e) => fm.setKnowledgeContext(e.target.value)}
                 placeholder="世界观、人设原文…"
                 className="min-h-[100px] resize-y border-white/10 bg-slate-900/80 text-xs text-slate-100 placeholder:text-slate-600"
               />
@@ -239,8 +184,8 @@ export function EditorWorkspaceSettingsSheet(p: Props) {
                 </Tooltip>
               </div>
               <Textarea
-                value={p.consistencyNotes}
-                onChange={(e) => p.setConsistencyNotes(e.target.value)}
+                value={fm.consistencyNotes}
+                onChange={(e) => fm.setConsistencyNotes(e.target.value)}
                 placeholder="人设与画风关键词…"
                 className="min-h-[100px] resize-y border-white/10 bg-slate-900/80 text-xs text-slate-100 placeholder:text-slate-600"
               />
@@ -252,8 +197,8 @@ export function EditorWorkspaceSettingsSheet(p: Props) {
               <div className="text-[11px] font-medium text-slate-400">项目参考图库（URL / 本地图）</div>
               <div className="flex flex-wrap gap-2">
                 <Input
-                  value={p.refUrlDraft}
-                  onChange={(e) => p.setRefUrlDraft(e.target.value)}
+                  value={rf.urlDraft}
+                  onChange={(e) => rf.setUrlDraft(e.target.value)}
                   placeholder="https://… 图片地址"
                   className="min-w-[160px] flex-1 border-white/10 bg-slate-900/80 text-xs"
                 />
@@ -263,8 +208,8 @@ export function EditorWorkspaceSettingsSheet(p: Props) {
                   size="sm"
                   className="text-xs"
                   onClick={() => {
-                    p.addReferenceLibraryUrl(p.refUrlDraft);
-                    p.setRefUrlDraft("");
+                    sb.addReferenceLibraryUrl(rf.urlDraft);
+                    rf.setUrlDraft("");
                   }}
                 >
                   添加 URL
@@ -274,12 +219,12 @@ export function EditorWorkspaceSettingsSheet(p: Props) {
                   variant="outline"
                   size="sm"
                   className="text-xs"
-                  onClick={() => p.refFileInputRef.current?.click()}
+                  onClick={() => rf.fileInputRef.current?.click()}
                 >
                   上传图片
                 </Button>
                 <input
-                  ref={p.refFileInputRef}
+                  ref={rf.fileInputRef}
                   type="file"
                   accept="image/*"
                   className="hidden"
@@ -293,15 +238,15 @@ export function EditorWorkspaceSettingsSheet(p: Props) {
                     }
                     const reader = new FileReader();
                     reader.onload = () => {
-                      if (typeof reader.result === "string") p.addReferenceLibraryUrl(reader.result);
+                      if (typeof reader.result === "string") sb.addReferenceLibraryUrl(reader.result);
                     };
                     reader.readAsDataURL(f);
                   }}
                 />
               </div>
-              {p.referenceLibraryUrls.length > 0 && (
+              {sb.referenceLibraryUrls.length > 0 && (
                 <ul className="max-h-48 space-y-1 overflow-y-auto text-[11px] text-slate-400">
-                  {p.referenceLibraryUrls.map((u) => (
+                  {sb.referenceLibraryUrls.map((u) => (
                     <li key={u} className="flex items-center justify-between gap-2">
                       <span className="truncate font-mono" title={u}>
                         {u.slice(0, 56)}
@@ -310,7 +255,7 @@ export function EditorWorkspaceSettingsSheet(p: Props) {
                       <button
                         type="button"
                         className="shrink-0 text-rose-400 hover:text-rose-300"
-                        onClick={() => p.removeReferenceLibraryUrl(u)}
+                        onClick={() => sb.removeReferenceLibraryUrl(u)}
                       >
                         移除
                       </button>
@@ -330,8 +275,8 @@ export function EditorWorkspaceSettingsSheet(p: Props) {
                 <label className="flex items-center gap-1.5 text-[11px] text-slate-400">
                   <span className="text-slate-500">画风预设</span>
                   <select
-                    value={p.animeStylePreset}
-                    onChange={(e) => p.setAnimeStylePreset(e.target.value)}
+                    value={fm.animeStylePreset}
+                    onChange={(e) => fm.setAnimeStylePreset(e.target.value)}
                     className="h-8 rounded-md border border-white/15 bg-slate-900 px-2 text-[11px] text-slate-200"
                   >
                     <option value="">默认（负面词 + 平台锁）</option>
@@ -344,8 +289,8 @@ export function EditorWorkspaceSettingsSheet(p: Props) {
                 <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-slate-400">
                   <input
                     type="checkbox"
-                    checked={p.animeMangaBoost}
-                    onChange={(e) => p.setAnimeMangaBoost(e.target.checked)}
+                    checked={fm.animeMangaBoost}
+                    onChange={(e) => fm.setAnimeMangaBoost(e.target.checked)}
                     className="rounded border-white/20 bg-slate-900"
                   />
                   漫画分镜语法
@@ -353,8 +298,8 @@ export function EditorWorkspaceSettingsSheet(p: Props) {
                 <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-slate-400">
                   <input
                     type="checkbox"
-                    checked={p.animeCrossShot}
-                    onChange={(e) => p.setAnimeCrossShot(e.target.checked)}
+                    checked={fm.animeCrossShot}
+                    onChange={(e) => fm.setAnimeCrossShot(e.target.checked)}
                     className="rounded border-white/20 bg-slate-900"
                   />
                   跨镜继承连贯
@@ -362,6 +307,9 @@ export function EditorWorkspaceSettingsSheet(p: Props) {
               </div>
               <p className="text-[10px] leading-snug text-slate-500">
                 服务端在每条 prompt 注入画风锁定、漫画构图（可选）、反向约束与平台动漫锁；不接第三方视频模型。
+                需要更细的「动作衔接镜」（如穿鞋→开门→上路→到校）时，请到剧本区「拆分镜头」旁调高{" "}
+                <span className="font-medium text-slate-400">拆镜上限</span>
+                （档位数越大，方舟拆镜与 Seedance 调用越多，费用与耗时会显著增加）。
               </p>
             </div>
           </TabsContent>
@@ -375,11 +323,11 @@ export function EditorWorkspaceSettingsSheet(p: Props) {
                   variant="outline"
                   size="sm"
                   className="text-[10px] h-7"
-                  disabled={p.animeCharacters.length === 0}
+                  disabled={ch.list.length === 0}
                   onClick={() => {
-                    const s = p.buildAnimeCharacterSnippet();
+                    const s = ch.buildSnippet();
                     if (!s.trim()) return;
-                    p.setConsistencyNotes((prev) => mergeCharacterSnippetIntoNotes(prev, s));
+                    fm.setConsistencyNotes((prev) => mergeCharacterSnippetIntoNotes(prev, s));
                   }}
                 >
                   写入一致性文案
@@ -387,21 +335,21 @@ export function EditorWorkspaceSettingsSheet(p: Props) {
               </div>
               <div className="flex flex-wrap gap-2">
                 <Input
-                  value={p.charNameDraft}
-                  onChange={(e) => p.setCharNameDraft(e.target.value)}
+                  value={ch.nameDraft}
+                  onChange={(e) => ch.setNameDraft(e.target.value)}
                   placeholder="角色名"
                   className="min-w-[100px] flex-1 border-white/10 bg-slate-900/80 text-xs"
                 />
                 <Input
-                  value={p.charSheetDraft}
-                  onChange={(e) => p.setCharSheetDraft(e.target.value)}
+                  value={ch.sheetDraft}
+                  onChange={(e) => ch.setSheetDraft(e.target.value)}
                   placeholder="立绘 URL（可选）"
                   className="min-w-[140px] flex-[2] border-white/10 bg-slate-900/80 text-xs font-mono"
                 />
               </div>
               <Textarea
-                value={p.charNotesDraft}
-                onChange={(e) => p.setCharNotesDraft(e.target.value)}
+                value={ch.notesDraft}
+                onChange={(e) => ch.setNotesDraft(e.target.value)}
                 placeholder="发色块、瞳色、服饰关键词…"
                 className="min-h-[56px] resize-y border-white/10 bg-slate-900/80 text-xs"
               />
@@ -411,21 +359,21 @@ export function EditorWorkspaceSettingsSheet(p: Props) {
                 size="sm"
                 className="text-xs"
                 onClick={() => {
-                  p.addAnimeCharacter({
-                    name: p.charNameDraft,
-                    sheetUrl: p.charSheetDraft,
-                    notes: p.charNotesDraft,
+                  ch.add({
+                    name: ch.nameDraft,
+                    sheetUrl: ch.sheetDraft,
+                    notes: ch.notesDraft,
                   });
-                  p.setCharNameDraft("");
-                  p.setCharSheetDraft("");
-                  p.setCharNotesDraft("");
+                  ch.setNameDraft("");
+                  ch.setSheetDraft("");
+                  ch.setNotesDraft("");
                 }}
               >
                 添加角色
               </Button>
-              {p.animeCharacters.length > 0 && (
+              {ch.list.length > 0 && (
                 <ul className="max-h-40 space-y-1 overflow-y-auto text-[11px] text-slate-400">
-                  {p.animeCharacters.map((c) => (
+                  {ch.list.map((c) => (
                     <li
                       key={c.id}
                       className="flex items-start justify-between gap-2 rounded border border-white/5 bg-black/20 px-2 py-1"
@@ -445,7 +393,7 @@ export function EditorWorkspaceSettingsSheet(p: Props) {
                       <button
                         type="button"
                         className="shrink-0 text-rose-400 hover:text-rose-300"
-                        onClick={() => p.removeAnimeCharacter(c.id)}
+                        onClick={() => ch.remove(c.id)}
                       >
                         删
                       </button>
@@ -460,8 +408,8 @@ export function EditorWorkspaceSettingsSheet(p: Props) {
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-[11px] text-slate-500">转场</span>
               <select
-                value={p.concatTransition}
-                onChange={(e) => p.setConcatTransition(e.target.value)}
+                value={cc.transition}
+                onChange={(e) => cc.setTransition(e.target.value)}
                 className="h-8 rounded-md border border-white/15 bg-slate-900 px-2 text-[11px] text-slate-200"
                 title="淡入淡出会统一转 720p 并重编码，较慢且无音轨"
                 aria-label="拼接转场"
@@ -474,36 +422,30 @@ export function EditorWorkspaceSettingsSheet(p: Props) {
                 variant="default"
                 size="sm"
                 className="text-xs"
-                disabled={p.concatClips.length < 2 || p.concatTimelinePending || p.submitting}
+                disabled={cc.clips.length < 2 || cc.timelinePending || gen.submitting}
                 title="服务端 FFmpeg；淡入淡出需重编码，成片无音轨"
-                onClick={p.onConcatSubmit}
+                onClick={cc.runConcatMaster}
               >
-                {p.concatTimelinePending ? "合成中…" : "FFmpeg 合成成片"}
+                {cc.timelinePending ? "合成中…" : "FFmpeg 合成成片"}
               </Button>
-              <span className="text-[11px] text-slate-500">
-                已选 {p.concatClips.length} 段有效成片 URL
-              </span>
+              <span className="text-[11px] text-slate-500">已选 {cc.clips.length} 段有效成片 URL</span>
             </div>
-            {p.concatTimelineError && (
+            {cc.timelineError && (
               <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-100">
                 合成失败：
-                {p.concatTimelineError instanceof Error
-                  ? p.concatTimelineError.message
-                  : String(p.concatTimelineError)}
+                {cc.timelineError instanceof Error ? cc.timelineError.message : String(cc.timelineError)}
               </div>
             )}
-            {p.masterVideoUrl && (
+            {cc.masterVideoUrl && (
               <div className="rounded-md border border-emerald-500/25 bg-emerald-500/10 px-3 py-2 text-[11px] text-emerald-100">
-                <div className="font-medium text-emerald-50">
-                  已生成 master（{p.concatClips.length} 段拼接）
-                </div>
+                <div className="font-medium text-emerald-50">已生成 master（{cc.clips.length} 段拼接）</div>
                 <a
-                  href={p.masterVideoUrl}
+                  href={cc.masterVideoUrl}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="mt-1 inline-block break-all text-sky-400 underline underline-offset-2 hover:text-sky-300"
                 >
-                  {p.masterVideoUrl}
+                  {cc.masterVideoUrl}
                 </a>
               </div>
             )}
